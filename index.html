@@ -1,0 +1,4251 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Channel Labeler + SEM結果まとめ</title>
+<style>
+  :root {
+    --bg: #1b1f2a;
+    --surface: #242938;
+    --surface2: #2d3344;
+    --accent: #1aedb0;
+    --accent2: #2ba5ff;
+    --text: #f1f3f9;
+    --text-muted: #8b91a8;
+    --border: #3c4258;
+    --label-bg: rgba(26, 237, 176, 0.92);
+    --label-text: #14161f;
+    --font-mono: Arial, 'Helvetica Neue', sans-serif;
+    --font-ui: Arial, 'Helvetica Neue', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    padding: 10px 32px;
+    border-bottom: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 20px;
+    flex-shrink: 0;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+  }
+
+  .header-center {
+    justify-self: stretch;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .header-center .status-box {
+    height: 64px;
+    min-height: 0;
+    padding: 6px 16px;
+    text-align: center;
+    line-height: 1.4;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+  }
+
+  .header-right {
+    justify-self: end;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .header-right .btn {
+    width: auto;
+    padding: 9px 14px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Below this, the 3-column grid can't fit the title + status + buttons on one
+     row without overlapping, so stack them instead of letting anything overflow. */
+  @media (max-width: 900px) {
+    header {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto auto;
+      row-gap: 10px;
+      padding: 12px 20px;
+    }
+
+    .header-left,
+    .header-center,
+    .header-right {
+      justify-self: stretch;
+      width: 100%;
+    }
+
+    .header-right {
+      justify-content: center;
+    }
+  }
+
+  header h1 {
+    font-size: 16px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: 0.04em;
+    color: var(--accent);
+  }
+
+  .main {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    gap: 0;
+  }
+
+  /* While an auto-detection sweep is running, everything except リセット should
+     be inert — the search may replace detectedComponents at any moment, so
+     letting the user edit/drag/undo concurrently would race with that. */
+  body.detecting-lock .sidebar,
+  body.detecting-lock .canvas-area,
+  body.detecting-lock .header-right > button:not(#resetBtn):not(#detectBtn) {
+    pointer-events: none;
+    opacity: 0.6;
+  }
+
+  .sidebar {
+    width: 560px;
+    min-width: 560px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 24px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-content: start;
+    gap: 20px;
+    overflow-y: scroll;
+    min-height: 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) var(--surface);
+  }
+  /* 表やチェックボックス一覧など横に広がりがちなカードは2列分をまたぐ。 */
+  #labelFieldsSection, #candidatesSection, #tableSection {
+    grid-column: 1 / -1;
+  }
+
+  /* Always-reserved, theme-matched scrollbar: keeps the sidebar's usable width
+     constant (no toggling between "auto"/"none") and stops it from looking like
+     a stock browser widget dropped onto a dark UI. */
+  .sidebar::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .sidebar::-webkit-scrollbar-track {
+    background: var(--surface);
+  }
+
+  .sidebar::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 6px;
+    border: 2px solid var(--surface);
+  }
+
+  .sidebar::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+  }
+
+  .sidebar-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+
+  .section-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+    height: 24px;
+  }
+
+  .section-title-row .sidebar-section-title {
+    margin-bottom: 0;
+    line-height: 24px;
+  }
+
+  .section-title-row .btn {
+    width: auto;
+    min-width: 68px;
+    height: 24px;
+    padding: 0 14px;
+    font-size: 11px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  /* JS measures both views' real (independent, in-flow) heights once, sets an
+     explicit pixel height on the container, then switches both to absolute
+     positioning so they overlap exactly. Absolutely positioned children can't
+     affect their container's size at all, so this is immune to any stretch/
+     grid-track sizing ambiguity — the container's height is only ever what we
+     set it to. */
+  .card-view-stack {
+    position: relative;
+  }
+
+  .card-view-stack > div {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .card-view-stack.height-locked {
+    overflow: hidden;
+  }
+
+  .card-view-stack.height-locked > div {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  .sidebar-subgroup {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+
+  .sidebar-section-title {
+    font-size: 11.5px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: 0.1em;
+    color: var(--accent2);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  .sidebar-subgroup > summary.sidebar-section-title {
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+
+  .sidebar-subgroup[open] > summary.sidebar-section-title,
+  .sidebar-subgroup > summary.sidebar-section-title:hover {
+    color: var(--accent2);
+  }
+
+  summary.sidebar-section-title {
+    list-style: none;
+    position: relative;
+    padding-left: 16px;
+    cursor: pointer;
+    margin-bottom: 0;
+  }
+
+  summary.sidebar-section-title::-webkit-details-marker {
+    display: none;
+  }
+
+  summary.sidebar-section-title::before {
+    content: '▶';
+    position: absolute;
+    left: 0;
+    top: 0;
+    font-size: 8px;
+    color: currentColor;
+    opacity: 0.65;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+    display: inline-block;
+  }
+
+  details[open] > summary.sidebar-section-title::before {
+    transform: rotate(90deg);
+    opacity: 1;
+  }
+
+  summary.sidebar-section-title:hover {
+    opacity: 0.85;
+  }
+
+  .drop-zone {
+    border: 1.5px dashed var(--border);
+    border-radius: 10px;
+    padding: 28px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    background: var(--surface2);
+  }
+
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--accent);
+    background: rgba(0,229,160,0.05);
+  }
+
+  .drop-zone .icon {
+    font-size: 28px;
+    margin-bottom: 8px;
+  }
+
+  .drop-zone p {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .drop-zone strong {
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  #fileInput, #excelInput { display: none; }
+
+  .btn {
+    width: 100%;
+    padding: 11px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  /* The spinner sits out-of-flow so toggling it never shifts the button's
+     centered label, and it never leaves a reserved blank slot when idle. */
+  #detectBtn { position: relative; }
+  #detectSpinner {
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  .btn:active { transform: scale(0.97); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .btn-primary {
+    background: var(--accent);
+    color: var(--label-text);
+  }
+
+  .btn-secondary {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  .btn-download {
+    background: var(--accent2);
+    color: #fff;
+  }
+
+  .settings-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .setting-row label {
+    font-size: 12px;
+    color: var(--text-muted);
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .help-btn {
+    width: 15px;
+    height: 15px;
+    min-width: 15px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    flex-shrink: 0;
+  }
+
+  .help-btn:hover, .help-btn.active {
+    border-color: var(--accent2);
+    color: var(--accent2);
+  }
+
+  .setting-help {
+    display: none;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent2);
+    border-radius: 6px;
+    padding: 8px 10px;
+    line-height: 1.6;
+    margin-top: -4px;
+  }
+
+  .action-item {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .action-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .action-row .btn { flex: 1; }
+
+  .setting-row input[type="number"],
+  .setting-row select {
+    width: 80px;
+    padding: 5px 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    text-align: right;
+  }
+
+  .status-box {
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    line-height: 1.6;
+    border: 1px solid var(--border);
+    min-height: 60px;
+    white-space: pre-line;
+  }
+
+  .status-box .ok { color: var(--accent); }
+  .status-box .err { color: #ff6b6b; }
+  .status-box .info { color: var(--accent2); }
+
+  .status-line {
+    overflow-wrap: anywhere;
+  }
+
+  .status-line + .status-line {
+    margin-top: 3px;
+  }
+
+  .canvas-area {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  .canvas-wrap {
+    position: relative;
+    display: inline-block;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 0 0 1px var(--border), 0 8px 48px rgba(0,0,0,0.6);
+  }
+
+  #outputCanvas {
+    display: block;
+    max-width: 100%;
+    width: auto;
+    height: auto;
+    cursor: crosshair;
+  }
+
+  .placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    color: var(--text-muted);
+    padding: 80px;
+    text-align: center;
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    min-width: 400px;
+    min-height: 300px;
+  }
+
+  .placeholder .ph-icon { font-size: 48px; opacity: 0.3; }
+  .placeholder p { font-size: 14px; opacity: 0.5; }
+
+  .spinner {
+    width: 20px; height: 20px;
+    border: 2px solid rgba(0,229,160,0.2);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    display: inline-block;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .channel-table-wrap {
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  .channel-table {
+    width: 100%;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    border-collapse: collapse;
+  }
+
+  .channel-table th {
+    color: var(--text-muted);
+    text-align: left;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .channel-table td {
+    padding: 4px 6px;
+    color: var(--text);
+    border-bottom: 1px solid rgba(46,50,69,0.5);
+  }
+
+  .channel-table tr:hover td { background: rgba(0,229,160,0.04); }
+  .channel-table tr.selected-row td { background: rgba(255,107,107,0.14); }
+
+  .ch-badge {
+    display: inline-block;
+    background: var(--accent);
+    color: var(--label-text);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+  }
+
+  .label-input {
+    width: 76px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 2px 4px;
+    resize: vertical;
+    line-height: 1.3;
+  }
+
+  .label-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .del-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 4px;
+  }
+
+  .del-btn:hover { color: #ff6b6b; }
+
+  .pos-toggle-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    padding: 3px 5px;
+    white-space: nowrap;
+  }
+
+  .pos-toggle-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+
+  #outputCanvas.manual-add-mode { cursor: copy; }
+  #outputCanvas.crop-mode { cursor: crosshair; }
+
+  .drop-zone.small {
+    padding: 16px 12px;
+  }
+
+  .field-check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+  }
+
+  .field-check-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .field-check-label input[type="checkbox"] {
+    accent-color: var(--accent2);
+    cursor: pointer;
+  }
+
+  .field-alias-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 11px;
+    padding: 3px 6px;
+  }
+
+  .data-cell {
+    color: var(--text-muted);
+    font-size: 10px;
+    max-width: 140px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .custom-label-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .custom-label-row input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12px;
+  }
+
+  .custom-label-row .btn {
+    width: auto;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .queue-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+
+  .queue-item.armed {
+    border-color: var(--accent2);
+    background: rgba(0,153,255,0.08);
+  }
+
+  .queue-item-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .queue-place-btn {
+    background: var(--accent2);
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    padding: 4px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .queue-item.armed .queue-place-btn {
+    background: var(--text-muted);
+  }
+
+  .candidate-item {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+  }
+
+  .candidate-item-text {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text);
+    line-height: 1.4;
+  }
+
+  .candidate-item-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .candidate-item-actions .btn {
+    flex: 1;
+    font-size: 11px;
+    padding: 6px 4px;
+  }
+
+  .legend-textarea {
+    width: 100%;
+    resize: vertical;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 8px;
+    line-height: 1.5;
+  }
+
+  .legend-btn-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .legend-btn-row .btn {
+    font-size: 11px;
+    padding: 8px 6px;
+  }
+
+  .channel-table tr.legend-row td { background: rgba(0,153,255,0.06); }
+
+  /* ==================== SEM結果まとめセクション ==================== */
+  #semSection {
+    background: var(--bg);
+  }
+  /* STEP1と全く同じ構成（header + .main(サイドバー+常時プレビュー)）にしている。
+     #semSectionのdisplayはここで固定せず.step-panel-flex.active側に任せる
+     （固定するとタブ切り替えのdisplay:noneをIDセレクタの詳細度で上書きしてしまい、
+     STEP1/2が同時に表示されるバグになる）。 */
+  .sem-sidebar {
+    width: 360px; min-width: 360px; background: var(--surface); border-right: 1px solid var(--border);
+    padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+    scrollbar-width: thin; scrollbar-color: var(--border) var(--surface);
+  }
+  .sem-canvas-area {
+    flex: 1; min-width: 0; overflow: auto; padding: 20px; background: var(--bg);
+    scrollbar-width: thin; scrollbar-color: var(--border) var(--bg);
+  }
+  /* STEP1のサイドバーと同じ、テーマに合わせた見た目のスクロールバーにする
+     （ブラウザ標準の見た目のままだと浮いて見えるため）。 */
+  .sem-sidebar::-webkit-scrollbar, .sem-canvas-area::-webkit-scrollbar { width: 10px; height: 10px; }
+  .sem-sidebar::-webkit-scrollbar-track { background: var(--surface); }
+  .sem-canvas-area::-webkit-scrollbar-track { background: var(--bg); }
+  .sem-sidebar::-webkit-scrollbar-thumb, .sem-canvas-area::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 6px; border: 2px solid var(--surface);
+  }
+  .sem-sidebar::-webkit-scrollbar-thumb:hover, .sem-canvas-area::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+  .sem-panel {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .sem-panel h3 { font-size: 12.5px; margin: 0 0 8px; color: var(--text); }
+  .sem-drop {
+    border: 1.5px dashed var(--border); border-radius: 8px; padding: 16px 10px;
+    text-align: center; font-size: 12px; color: var(--text-muted); cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .sem-drop:hover, .sem-drop.drag { border-color: var(--accent); background: rgba(26,237,176,0.05); color: var(--text); }
+  .sem-drop input { display: none; }
+  .sem-hint { font-size: 11px; color: var(--text-muted); margin: 8px 0 0; line-height: 1.5; }
+  .sem-status-line { font-size: 11.5px; color: var(--accent2); margin-top: 8px; min-height: 14px; word-break: break-all; }
+
+  .sem-column-list, .sem-field-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+  .sem-col-row, .sem-field-row {
+    display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12.5px; color: var(--text);
+  }
+  .sem-col-label, .sem-field-label { flex: 1; }
+  .sem-col-btns { display: flex; gap: 4px; }
+  .sem-col-btns button {
+    background: var(--surface2); color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px;
+    width: 22px; height: 22px; font-size: 10px; cursor: pointer; padding: 0; line-height: 1;
+  }
+  .sem-col-btns button:disabled { opacity: 0.3; cursor: not-allowed; }
+  .sem-field-hint { color: var(--text-muted); font-size: 12px; margin: 0; }
+  .sem-opts {
+    display: flex; flex-direction: column; gap: 8px;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 12.5px;
+  }
+  .sem-opts label { display: flex; align-items: center; gap: 5px; cursor: pointer; color: var(--text-muted); }
+  .sem-opts label input { accent-color: var(--accent); }
+  .sem-actions { display: flex; flex-direction: column; gap: 10px; }
+  .sem-actions .btn { width: 100%; }
+  /* 先輩の資料そのままにならないよう、コマ間を黒ではなく白ガターにして
+     学会発表の図版に近い、明るくすっきりした見た目にしている。
+     実際の色（ガター・見出し・条件/Photo）はJSからsemColorsで上書きするので、
+     ここでは構造だけを決めている。 */
+  #semGridWrap { border-radius: 10px; padding: 10px; overflow-x: auto; }
+  .sem-gridTable { border-collapse: separate; border-spacing: 4px; margin: 0 auto; }
+  .sem-gridTable th, .sem-gridTable td { padding: 0; }
+  .sem-headCell {
+    height: 44px; font-weight: 800; font-size: 20px;
+    text-align: center; vertical-align: middle; border-radius: 2px; padding: 0 10px;
+  }
+  .sem-cell {
+    background: #fff; display: flex; align-items: center; justify-content: center;
+    position: relative; overflow: hidden; border-radius: 2px;
+  }
+  .sem-cell canvas { display: block; }
+  .sem-cell .sem-placeholder { font-size: 11px; text-align: center; padding: 4px; opacity: 0.7; }
+  .sem-cell.sem-condCell { display: block; text-align: left; padding: 10px; }
+  .sem-cell.sem-condCell .sem-condText { font-family: var(--font-mono); font-size: 16px; line-height: 1.7; white-space: nowrap; }
+  .sem-cell.sem-condCell .sem-placeholder { text-align: left; padding: 0; }
+
+  .sem-color-grid { display: flex; flex-direction: column; gap: 6px; }
+  .sem-color-row {
+    display: flex; align-items: center; gap: 10px; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12.5px; color: var(--text);
+  }
+  .sem-color-label { flex: 1; }
+  .sem-color-row input[type="color"] {
+    width: 34px; height: 24px; border: 1px solid var(--border); border-radius: 4px; padding: 0; background: none; cursor: pointer;
+  }
+  .sem-emptyState { color: var(--text-muted); font-size: 13px; padding: 30px; text-align: center; }
+
+  .step-badge {
+    display: inline-block; font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em;
+    color: #14161f; background: var(--accent); padding: 3px 8px; border-radius: 5px;
+    font-family: var(--font-mono); vertical-align: middle;
+  }
+  .step-sub { font-size: 12px; font-weight: 400; color: var(--text-muted); letter-spacing: 0; margin-left: 8px; }
+
+  /* ==================== STEP切り替えタブ ==================== */
+  .tabbar {
+    display: flex; gap: 8px; padding: 10px 24px; background: var(--surface);
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .tab-btn {
+    background: var(--surface2); color: var(--text-muted); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 16px; font-size: 13px; font-weight: 700; font-family: var(--font-ui); letter-spacing: 0.01em;
+    cursor: pointer; display: flex; align-items: center; gap: 8px; transition: opacity .15s;
+  }
+  .tab-btn .step-badge { background: var(--bg); color: var(--text-muted); }
+  .tab-btn.active { background: var(--accent); color: #14161f; border-color: var(--accent); }
+  .tab-btn.active .step-badge { background: #14161f; color: var(--accent); }
+  .tab-btn:hover { opacity: 0.85; }
+
+  .step-panel { flex: 1; min-height: 0; display: none; }
+  .step-panel-flex.active { display: flex; flex-direction: column; }
+  .step-panel-block.active { display: block; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<div class="tabbar">
+  <button type="button" class="tab-btn active" id="tabStep1Btn"><span class="step-badge">STEP 1</span>Channel Labeler</button>
+  <button type="button" class="tab-btn" id="tabStep2Btn"><span class="step-badge">STEP 2</span>SEM Composer</button>
+</div>
+<script>
+(() => {
+  const tab1 = document.getElementById('tabStep1Btn');
+  const tab2 = document.getElementById('tabStep2Btn');
+  // step1Panel/semSection are defined later in the document, so look them up
+  // lazily inside show() rather than at parse time (they don't exist yet here).
+  function show(step){
+    const panel1 = document.getElementById('step1Panel');
+    const panel2 = document.getElementById('semSection');
+    tab1.classList.toggle('active', step === 1);
+    tab2.classList.toggle('active', step === 2);
+    panel1.classList.toggle('active', step === 1);
+    panel2.classList.toggle('active', step === 2);
+  }
+  tab1.addEventListener('click', () => show(1));
+  tab2.addEventListener('click', () => show(2));
+})();
+</script>
+
+<div id="step1Panel" class="step-panel step-panel-flex active">
+<header>
+  <div class="header-left">
+    <span class="step-badge">STEP 1</span>
+    <h1>Channel Labeler<span class="step-sub">電極写真にCh番号を割り当てる</span></h1>
+  </div>
+  <div class="header-center">
+    <div class="status-box" id="statusBox">画像をアップロードしてください</div>
+  </div>
+  <div class="header-right">
+    <!-- 元に戻す/やり直すボタンは表示上は撤去（Ctrl+Z/Ctrl+Yのショートカットは維持するため要素自体は残す） -->
+    <button class="btn btn-secondary" id="undoDeleteBtn" disabled title="直前の変更（削除・移動・編集など）を元に戻す（Ctrl+Z）" style="display:none">変更を元に戻す</button>
+    <button class="btn btn-secondary" id="redoBtn" disabled title="元に戻した操作をやり直す（Ctrl+Y）" style="display:none">やり直す</button>
+    <button class="btn btn-primary" id="detectBtn" disabled>
+      <span id="detectSpinner" style="visibility:hidden"><span class="spinner"></span></span>
+      <span>🔍 自動でチャンネルを検出</span>
+    </button>
+    <button class="btn btn-secondary" id="resetBtn" disabled title="ラベルをすべて消して読み込んだ直後の画像に戻す">リセット</button>
+    <button class="btn btn-download" id="downloadBtn" disabled title="今表示されている画像をPNGで保存（Ctrl+S）">画像を保存</button>
+  </div>
+</header>
+
+<div class="main">
+  <aside class="sidebar">
+
+    <div class="sidebar-card">
+      <div class="section-title-row">
+        <span class="sidebar-section-title" id="imageCardTitle">画像を読み込む</span>
+        <button class="btn btn-secondary" id="imageEditBtn" type="button" disabled>編集</button>
+      </div>
+      <div class="card-view-stack" id="imageCardStack">
+        <div id="loadImageView">
+          <div class="drop-zone" id="dropZone">
+            <div class="icon">📁</div>
+            <strong>クリックまたはドロップ</strong>
+            <p>JPG / PNG / WEBP</p>
+          </div>
+          <input type="file" id="fileInput" accept="image/*">
+        </div>
+        <div id="editImageView" style="visibility:hidden;">
+          <div class="legend-btn-row">
+            <button class="btn btn-primary" id="zoomToolBtn" type="button">🔍 ズーム</button>
+            <button class="btn btn-secondary" id="cropModeBtn" type="button">✂ トリミング</button>
+          </div>
+          <div class="legend-btn-row" id="imageEditActions" style="margin-top:8px;">
+            <button class="btn btn-primary" id="imageEditApplyBtn" type="button">確定</button>
+            <button class="btn btn-secondary" id="imageEditCancelBtn" type="button">キャンセル</button>
+          </div>
+          <div class="legend-btn-row" id="cropActions" style="display:none; margin-top:8px;">
+            <button class="btn btn-primary" id="cropApplyBtn" type="button">確定</button>
+            <button class="btn btn-secondary" id="cropCancelBtn" type="button">キャンセル</button>
+          </div>
+          <button class="btn btn-secondary" id="imageEditUndoBtn" type="button" disabled style="margin-top:8px; width:100%;">🔙 編集を元に戻す</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-card">
+      <div class="sidebar-section-title">データを読み込む（任意）</div>
+      <div class="drop-zone small" id="excelDropZone">
+        <div class="icon">📊</div>
+        <strong>クリックまたはドロップ</strong>
+        <p>Excel(.xlsx/.xls) / CSV<br>hub, port, CA_VOLT, CA_TIME_, memo など</p>
+      </div>
+      <input type="file" id="excelInput" accept=".xlsx,.xls,.csv">
+    </div>
+
+    <div id="labelFieldsSection" class="sidebar-card" style="display:none">
+      <div class="sidebar-section-title">ラベルに表示する項目</div>
+      <div class="settings-grid" id="labelFieldsGrid"></div>
+    </div>
+
+    <div class="sidebar-card">
+      <div class="setting-row">
+        <label>開始チャンネル番号 <button type="button" class="help-btn" data-help="chStart">?</button></label>
+        <input type="number" id="chStartNumber" value="1" min="1" max="9999">
+      </div>
+      <div class="setting-row">
+        <label>終了チャンネル番号（任意） <button type="button" class="help-btn" data-help="chEnd">?</button></label>
+        <input type="number" id="chEndNumber" placeholder="自動" min="1" max="9999">
+      </div>
+      <div class="setting-help" id="help-chStart">この写真に写っているラベルが何番から始まるかを指定します。例えば32chを16個ずつ2回に分けて撮影した場合、1枚目は1、2枚目は17を入力してから検出してください（Ch17、Ch18…と振られます）。全部まとめて1枚で撮る場合は1のままで大丈夫です。「終了チャンネル番号」も入力すると、その範囲の個数（例:1〜16なら16個）を検出の目標数として使うので、データ行数がなくても検出数をぴったり合わせやすくなります。</div>
+
+      <div class="action-item" style="margin-top:10px">
+        <div class="action-row">
+          <span style="font-size:12px; color:var(--text-muted); flex:1;">🔍 自動検出は上部ヘッダーのボタンから実行できます</span>
+          <button type="button" class="help-btn" data-help="detect">?</button>
+        </div>
+        <div class="setting-help" id="help-detect">画像から自動的にラベル候補を探し、上で指定した番号から連番で仮のラベルを置きます。左上→左下→右上→右下…のように、列ごとに上から下へ番号を振ります。下の段になったラベルは自動で文字が枠の下側に表示されます。設定を自分で調整する必要はなく、うまく検出できないときは条件を自動でいろいろ変えながら探します。精度は完璧ではないので、置いた後に位置や文字を手動で調整してください。最初に見つかった候補をすぐ配置するため、違う配置だった場合は下の「他の候補を探す」でさらに探せます。</div>
+        <button class="btn btn-secondary" id="moreCandidatesBtn" type="button" style="display:none; margin-top:8px; width:100%;">🔁 他の候補を探す（違う場合）</button>
+      </div>
+    </div>
+
+    <div class="sidebar-card">
+      <div class="sidebar-section-title">手動でラベルを作成 <button type="button" class="help-btn" data-help="customLabel">?</button></div>
+      <div class="custom-label-row">
+        <input type="text" id="customLabelText" placeholder="自由なラベル文字（例: SPARE）">
+        <button class="btn btn-secondary" id="addCustomLabelBtn" type="button">＋追加</button>
+      </div>
+      <button class="btn btn-secondary" id="buildQueueBtn" type="button" style="margin-top:8px" disabled>📋 Excelの内容からラベルを作成</button>
+      <div class="setting-help" id="help-customLabel">ここで作ったラベルは、すぐに画像に貼られるわけではなく、下の「配置待ちのラベル」に追加されます。そこから1つずつ選んで画像上に配置します。「Excelの内容からラベルを作成」を押すと、読み込んだデータの行ごとに（上の「ラベルに表示する項目」で選んだ内容で）まとめて作成できます。</div>
+
+      <div id="labelQueueSection" style="display:none; margin-top:14px;">
+        <div class="sidebar-section-title">配置待ちのラベル (<span id="queueCount">0</span>)</div>
+        <div class="queue-list" id="queueList"></div>
+      </div>
+
+      <details id="labelSettingsDetails" class="sidebar-subgroup" style="margin-top:14px">
+        <summary class="sidebar-section-title" style="display:list-item; cursor:pointer;">ラベル設定</summary>
+        <div class="settings-grid" style="margin-top:10px">
+          <div class="setting-row">
+            <label>フォントサイズ <button type="button" class="help-btn" data-help="fontSize">?</button></label>
+            <input type="number" id="fontSize" value="100" min="8" max="300">
+          </div>
+          <div class="setting-help" id="help-fontSize">画像に表示するラベル文字の大きさです。数値が大きいほど文字が大きく表示されます。自動検出・手動配置どちらのラベルにも適用されます。</div>
+
+          <div class="setting-row">
+            <label>ラベル色 <button type="button" class="help-btn" data-help="labelColor">?</button></label>
+            <select id="labelColor">
+              <option value="#00e5a0">グリーン</option>
+              <option value="#ffdd57">イエロー</option>
+              <option value="#ff6b6b">レッド</option>
+              <option value="#ffffff">ホワイト</option>
+              <option value="#0099ff">ブルー</option>
+            </select>
+          </div>
+          <div class="setting-help" id="help-labelColor">ラベルを囲む枠と、ラベルの背景に使う色です。画像の背景と混ざらず見やすい色を選んでください。</div>
+
+          <div class="setting-row">
+            <label>ラベルの位置（初期値） <button type="button" class="help-btn" data-help="labelPosition">?</button></label>
+            <select id="labelPosition">
+              <option value="above">枠の上</option>
+              <option value="below">枠の下</option>
+            </select>
+          </div>
+          <div class="setting-help" id="help-labelPosition">新しく配置するラベルの文字を、対象の枠の上と下のどちらに表示するかの初期値です。ラベルごとに、一覧表の「位置」列にあるボタン（⬆上 / ⬇下）や、画像上でラベルをShiftキーを押しながらクリックすることでも個別に切り替えられます。</div>
+        </div>
+
+        <div class="action-item" style="margin-top:10px">
+          <div class="action-row">
+            <button class="btn btn-secondary" id="evenBelowBtn" type="button" disabled>偶数chを下ラベルにする</button>
+            <button type="button" class="help-btn" data-help="evenBelow">?</button>
+          </div>
+          <div class="setting-help" id="help-evenBelow">配置済みのラベルのうち、Ch番号が偶数のものだけをまとめて「枠の下」表示に切り替えます。左右2列で上下に並ぶような配置で、偶数chが下側の段になっている場合にまとめて直すのに使えます。</div>
+        </div>
+      </details>
+    </div>
+
+    <div class="sidebar-card">
+      <div class="sidebar-section-title">凡例を配置 <button type="button" class="help-btn" data-help="legend">?</button></div>
+      <textarea id="legendText" class="legend-textarea" rows="4" placeholder="例：&#10;Ch&#10;[V]&#10;[s]"></textarea>
+      <div class="legend-btn-row">
+        <button class="btn btn-secondary" id="legendTemplateBtn" type="button">選択項目から下書き</button>
+        <button class="btn btn-secondary" id="placeLegendBtn" type="button" disabled>凡例を配置</button>
+      </div>
+      <details id="legendSettingsDetails" class="sidebar-subgroup" style="margin-top:10px">
+        <summary class="sidebar-section-title" style="display:list-item; cursor:pointer;">凡例設定</summary>
+        <div class="settings-grid" style="margin-top:10px">
+          <div class="setting-row">
+            <label>凡例フォントサイズ <button type="button" class="help-btn" data-help="legendFontSize">?</button></label>
+            <input type="number" id="legendFontSize" value="100" min="8" max="300">
+          </div>
+          <div class="setting-help" id="help-legendFontSize">凡例パネル内の文字の大きさです。チャンネルラベルのフォントサイズとは別に調整できます。</div>
+
+          <div class="setting-row">
+            <label>凡例の枠色 <button type="button" class="help-btn" data-help="legendColor">?</button></label>
+            <select id="legendColor">
+              <option value="#ffffff" selected>ホワイト</option>
+              <option value="#00e5a0">グリーン</option>
+              <option value="#ffdd57">イエロー</option>
+              <option value="#ff6b6b">レッド</option>
+              <option value="#0099ff">ブルー</option>
+            </select>
+          </div>
+          <div class="setting-help" id="help-legendColor">凡例パネルの枠線の色です（背景は常に半透明の黒、文字は白）。チャンネルラベルの色とは別に選べます。</div>
+        </div>
+      </details>
+      <div class="setting-help" id="help-legend">画像に、ラベルの意味を説明する凡例（テキスト枠）を配置できます。上の「ラベルに表示する項目」で選んだ内容から下書きが自動で入るので、自由に書き換えてから「凡例を配置」→画像上をクリックして配置してください。配置後は他のラベルと同じようにドラッグで移動・右下の■でサイズ調整・削除ができます。</div>
+    </div>
+
+    <div id="candidatesSection" class="sidebar-card" style="display:none">
+      <div class="sidebar-section-title">検出候補を選択 (<span id="candidatesCount">0</span>) <button type="button" class="help-btn" data-help="candidates">?</button></div>
+      <div class="setting-help" id="help-candidates">データ行数と検出数が一致する設定が複数見つかりました。数が合っていても中身（枠の位置）が正しいとは限らないため、「プレビュー」で画像上の枠を確認してから、正しそうな候補の「使う」を押してください。</div>
+      <div class="queue-list" id="candidatesList"></div>
+    </div>
+
+    <div class="sidebar-card">
+      <div class="action-item">
+        <div class="action-row">
+          <button class="btn btn-secondary" id="manualAddBtn" disabled>➕ 空のラベルをすぐ配置</button>
+          <button type="button" class="help-btn" data-help="manualAdd">?</button>
+        </div>
+        <div class="setting-help" id="help-manualAdd">キューを使わず、その場で空のラベルを1つ配置します。ボタンを押した後、画像上の配置したい場所をクリックしてください。文字は配置後にテーブルで自由に書き換えられます。なお、画像や一覧表でラベルをクリックして選択し、キーボードの Delete / Backspace キーを押せば、いつでも削除できます。</div>
+      </div>
+    </div>
+
+    <div id="tableSection" class="sidebar-card" style="display:none">
+      <div class="sidebar-section-title">配置済みラベル一覧</div>
+      <div class="channel-table-wrap">
+        <table class="channel-table" id="channelTable">
+          <thead>
+            <tr><th>ラベル</th><th>位置</th><th>列</th><th>行</th><th>X</th><th>Y</th><th>データ</th><th></th></tr>
+          </thead>
+          <tbody id="channelTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </aside>
+
+  <main class="canvas-area">
+    <div id="placeholder" class="placeholder">
+      <div class="ph-icon">🔌</div>
+      <p>画像をサイドバーから<br>アップロードしてください</p>
+    </div>
+    <div class="canvas-wrap" id="canvasWrap" style="display:none">
+      <canvas id="outputCanvas"></canvas>
+    </div>
+  </main>
+</div>
+</div>
+
+<section id="semSection" class="step-panel step-panel-flex">
+<header>
+  <div class="header-left">
+    <span class="step-badge">STEP 2</span>
+    <h1>SEM Composer<span class="step-sub">SEM結果を電極写真と対応づける</span></h1>
+  </div>
+  <div class="header-center">
+    <div class="status-box" id="semStatusBox">① 左の写真でCh番号を1つ以上割り当ててください</div>
+  </div>
+  <div class="header-right">
+    <button class="btn btn-primary" id="semBuildBtn" type="button" disabled>グリッドを生成</button>
+    <button class="btn btn-download" id="semExportBtn" type="button" disabled>PNGとして書き出す</button>
+  </div>
+</header>
+
+<div class="main">
+  <aside class="sem-sidebar">
+    <div class="sem-panel">
+      <h3>① SEM結果フォルダ</h3>
+      <div class="sem-drop" id="semDropFolder">
+        条件ごとのサブフォルダ（SEM_SEM.bmp 等を含む）が入った親フォルダをここにドラッグ<br>または <u>クリックして選択</u>
+        <input type="file" id="semFolderInput" webkitdirectory multiple>
+      </div>
+      <p class="sem-hint">※ドラッグ&ドロップがおすすめです。「クリックして選択」だとブラウザ標準の「このフォルダへのアクセスを許可しますか」という確認が一度表示されることがあります（Chromeの仕様で、フォルダを読み込むどんなサイトでも表示される安全確認です。データが外部送信されることはありません）。</p>
+      <div class="sem-status-line" id="semFolderStatus"></div>
+    </div>
+
+    <div class="sem-panel">
+      <h3>② 条件CSV（任意・上のExcel/CSVを読み込み済みならスキップ可）</h3>
+      <div class="sem-drop" id="semDropCsv">
+        hub,port,Eon,Eoff,on_s,off_s,... の条件CSVをドラッグ<br>または <u>クリックして選択</u>
+        <input type="file" id="semCsvInput" accept=".csv">
+      </div>
+      <div class="sem-status-line" id="semCsvStatus"></div>
+    </div>
+
+    <div class="sem-panel">
+      <h3>③ 表示する列・並び順</h3>
+      <div id="semColumnList" class="sem-column-list"></div>
+    </div>
+
+    <div class="sem-panel">
+      <h3>④ 条件に表示する項目</h3>
+      <div id="semFieldList" class="sem-field-list">
+        <p class="sem-field-hint">SEMフォルダ・CSV読み込み後に選べる項目が表示されます</p>
+      </div>
+    </div>
+
+    <div class="sem-panel">
+      <h3>⑤ 文字サイズ・配色</h3>
+      <div class="settings-grid">
+        <div class="setting-row">
+          <label for="semCondFontSize">条件のフォントサイズ</label>
+          <input type="number" id="semCondFontSize" value="16" min="6" max="40">
+        </div>
+      </div>
+      <details class="sidebar-subgroup" style="margin-top:12px">
+        <summary class="sidebar-section-title" style="display:list-item; cursor:pointer;">配色</summary>
+        <div style="margin-top:10px;">
+          <button class="btn btn-secondary" id="semColorResetBtn" type="button" style="width:auto; padding:4px 12px; font-size:11px; margin-bottom:8px;">既定に戻す</button>
+          <div id="semColorGrid" class="sem-color-grid"></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="sem-opts">
+      <label><input type="checkbox" id="semPhotoZoom" checked> 写真を○部分にズーム</label>
+      <label><input type="checkbox" id="semEnhanceScale" checked> スケールバーを見やすく表示</label>
+    </div>
+  </aside>
+
+  <main class="sem-canvas-area">
+    <div id="semGridWrap">
+      <div class="sem-emptyState">①②を用意して、上のヘッダーの「グリッドを生成」を押してください</div>
+    </div>
+  </main>
+</div>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const excelDropZone = document.getElementById('excelDropZone');
+const excelInput = document.getElementById('excelInput');
+const detectBtn = document.getElementById('detectBtn');
+const evenBelowBtn = document.getElementById('evenBelowBtn');
+const manualAddBtn = document.getElementById('manualAddBtn');
+const placeLegendBtn = document.getElementById('placeLegendBtn');
+const imageEditBtn = document.getElementById('imageEditBtn');
+const imageCardTitle = document.getElementById('imageCardTitle');
+const loadImageView = document.getElementById('loadImageView');
+const editImageView = document.getElementById('editImageView');
+const zoomToolBtn = document.getElementById('zoomToolBtn');
+const imageEditActions = document.getElementById('imageEditActions');
+const imageEditApplyBtn = document.getElementById('imageEditApplyBtn');
+const imageEditCancelBtn = document.getElementById('imageEditCancelBtn');
+const imageEditUndoBtn = document.getElementById('imageEditUndoBtn');
+const cropModeBtn = document.getElementById('cropModeBtn');
+const cropApplyBtn = document.getElementById('cropApplyBtn');
+const cropCancelBtn = document.getElementById('cropCancelBtn');
+const cropActions = document.getElementById('cropActions');
+const undoDeleteBtn = document.getElementById('undoDeleteBtn');
+const redoBtn = document.getElementById('redoBtn');
+const resetBtn = document.getElementById('resetBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const statusBox = document.getElementById('statusBox');
+const outputCanvas = document.getElementById('outputCanvas');
+const ctx = outputCanvas.getContext('2d');
+ctx.imageSmoothingEnabled = true;
+ctx.imageSmoothingQuality = 'high';
+const placeholder = document.getElementById('placeholder');
+const canvasWrap = document.getElementById('canvasWrap');
+const detectSpinner = document.getElementById('detectSpinner');
+const moreCandidatesBtn = document.getElementById('moreCandidatesBtn');
+
+let originalImage = null;
+let originalFileName = 'image';
+let pristineImage = null; // the image exactly as loaded, before any zoom/crop — used to power "リセット"
+let pristineWidth = 0;
+let pristineHeight = 0;
+let detectedComponents = [];
+let manualAddMode = false;
+let nextManualId = 1;
+let selectedIndex = null;
+let excelRows = [];
+let excelColumns = [];
+let selectedFields = new Set(['ch']);
+let fieldAliases = {}; // excel column -> short display name used in the legend, e.g. CA_VOLT -> 'V'
+let labelQueue = [];
+let queueIdCounter = 1;
+let armedPlacement = null; // { text, data, queueId }
+let dragInfo = null; // { idx, mode: 'move'|'resize', startCx, startCy, origX, origY, origW, origH }
+let swapPendingIdx = null; // index armed by a first double-click, waiting for a second
+let swapPendingTimer = null;
+const HANDLE_SIZE = 10;
+let cropMode = false;
+let cropRect = null; // {x,y,w,h} in canvas coords, once a drag finishes
+let cropDragStart = null; // {cx,cy} while dragging out a crop rectangle
+let detectionCandidates = []; // { result, params } entries shown when several configs tie on count
+let undoStack = []; // snapshots of detectedComponents taken right before a mutation
+let redoStack = []; // snapshots popped off undoStack, so an undo can be redone
+const UNDO_LIMIT = 30;
+
+// Interactive "画像を編集" state (touchpad pinch/scroll zoom + pan preview)
+let imageEditMode = false;
+let zoomToolActive = false;
+let viewZoom = 1;
+let viewOffsetX = 0;
+let viewOffsetY = 0;
+let panDragStart = null; // { cx, cy, offsetX, offsetY } while dragging to pan during zoom tool
+let imageEditHistory = []; // { image, width, height, components } snapshots taken right before a zoom/crop apply
+
+// Auto-detection no longer exposes threshold/minW/minH as UI controls — these are
+// just the starting point for the auto-search sweep, tuned from the image itself.
+let baseThreshold = 40;
+let baseMinW = 18;
+let baseMinH = 30;
+// 自動検出のスイープはこの解像度の縮小コピー上で行う（重い処理を軽くするため）。
+const DETECT_MAX_DIM = 1200;
+let channelStartNumber = 1; // lets a batch photo (e.g. Ch17-32) start numbering mid-sequence
+let detectionRunId = 0; // bumped to invalidate any in-flight auto-detection (e.g. when リセット is pressed)
+let detectionResumeState = null; // sweep state left off after the first candidate was found, so 「さらに検索」 can continue it
+
+function setDetectionLockUi(locked) {
+  document.body.classList.toggle('detecting-lock', locked);
+}
+
+// ---------- File handling ----------
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) loadImage(file);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) loadImage(fileInput.files[0]);
+});
+
+function loadImage(file) {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const img = new Image();
+    img.onload = () => {
+      detectionRunId++; // invalidate any in-flight auto-detection tied to the previous image
+      setDetectionLockUi(false);
+      detectionResumeState = null;
+      moreCandidatesBtn.style.display = 'none';
+      originalImage = img;
+      pristineImage = img;
+      pristineWidth = img.width;
+      pristineHeight = img.height;
+      originalFileName = file.name.replace(/\.[^/.]+$/, '') || 'image';
+      outputCanvas.width = img.width;
+      outputCanvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      autoTuneComponentSize(img.width, img.height);
+      placeholder.style.display = 'none';
+      canvasWrap.style.display = 'inline-block';
+      fitCanvasToViewport();
+      detectBtn.disabled = false;
+      manualAddBtn.disabled = false;
+      placeLegendBtn.disabled = false;
+      imageEditBtn.disabled = false;
+      evenBelowBtn.disabled = false;
+      resetBtn.disabled = false;
+      detectedComponents = [];
+      nextManualId = 1;
+      dragInfo = null;
+      clearTimeout(swapPendingTimer);
+      swapPendingIdx = null;
+      panDragStart = null;
+      setPlacementMode(false);
+      exitImageEditMode();
+      selectedIndex = null;
+      undoStack = [];
+      undoDeleteBtn.disabled = true;
+      redoStack = [];
+      redoBtn.disabled = true;
+      imageEditHistory = [];
+      imageEditUndoBtn.disabled = true;
+      hideDetectionCandidates();
+      document.getElementById('tableSection').style.display = 'none';
+      downloadBtn.disabled = true;
+      setStatus(`<span class="ok">✓ 読み込み完了</span>\n${img.width}×${img.height}px — ${file.name}`);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// "最小コンポーネント幅/高さ" is hard to tune by hand and its right value depends
+// entirely on the photo's resolution, so pick a sensible starting point from the
+// image size itself whenever a new image loads (the user can still nudge it).
+function autoTuneComponentSize(imgW, imgH) {
+  baseThreshold = 40;
+  baseMinW = Math.max(15, Math.round(imgW * 0.02));
+  baseMinH = Math.max(15, Math.round(imgH * 0.025));
+}
+
+// Caps the canvas's on-screen size (in real pixels, not %) to whatever room
+// .canvas-area actually has, so the image only ever scales down to fit — never
+// stretched, and never clipped by an ambiguous CSS percentage/flex chain.
+function fitCanvasToViewport() {
+  const area = document.querySelector('.canvas-area');
+  if (!area) return;
+  const style = getComputedStyle(area);
+  const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+  const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const availW = Math.max(50, area.clientWidth - padX);
+  const availH = Math.max(50, area.clientHeight - padY);
+  outputCanvas.style.maxWidth = availW + 'px';
+  outputCanvas.style.maxHeight = availH + 'px';
+}
+
+// Pin the load/edit card to the taller of its two views. This only works
+// correctly because .card-view-stack > div uses align-self:start — with the
+// default "stretch" both views get inflated to match each other first, which
+// made scrollHeight report the same (already-equalized) number for both and
+// silently turned this into a no-op. With align-self:start each view keeps
+// its own natural height, so the measurement below is the real one.
+function lockImageCardHeight() {
+  const stack = document.getElementById('imageCardStack');
+  if (!stack || !loadImageView || !editImageView) return;
+  // Unlock first: with both views back in normal (stacked, non-overlapping)
+  // flow, each one's scrollHeight is its own real, independent height.
+  stack.classList.remove('height-locked');
+  stack.style.height = '';
+  const h = Math.max(loadImageView.scrollHeight, editImageView.scrollHeight);
+  stack.style.height = h + 'px';
+  stack.classList.add('height-locked');
+}
+
+
+window.addEventListener('resize', () => {
+  if (originalImage) fitCanvasToViewport();
+});
+
+// ---------- Excel / CSV data loading ----------
+excelDropZone.addEventListener('click', () => excelInput.click());
+excelDropZone.addEventListener('dragover', e => { e.preventDefault(); excelDropZone.classList.add('drag-over'); });
+excelDropZone.addEventListener('dragleave', () => excelDropZone.classList.remove('drag-over'));
+excelDropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  excelDropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) loadExcel(file);
+});
+excelInput.addEventListener('change', () => {
+  if (excelInput.files[0]) loadExcel(excelInput.files[0]);
+});
+
+function loadExcel(file) {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const data = new Uint8Array(ev.target.result);
+      const wb = XLSX.read(data, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+      if (rows.length === 0) {
+        setStatus('<span class="err">✗ データが見つかりませんでした。1行目に見出し行があるファイルを読み込んでください</span>');
+        return;
+      }
+
+      excelRows = rows;
+      excelColumns = Object.keys(rows[0]);
+      selectedFields = new Set(['ch']);
+      fieldAliases = {};
+      excelColumns.forEach(col => {
+        const guess = guessFieldAlias(col);
+        if (guess) fieldAliases[col] = guess;
+      });
+      renderFieldCheckboxes();
+      mapExcelDataToComponents();
+      regenerateAutoLabels();
+      if (originalImage) drawLabels(detectedComponents);
+      if (detectedComponents.length > 0) renderTable(detectedComponents);
+
+      document.getElementById('buildQueueBtn').disabled = false;
+      buildQueueFromExcel();
+
+      setStatus(`<span class="ok">✓ データ読み込み完了</span>\n${rows.length}行 — ${excelColumns.join(', ')}\n配置待ちのラベルを${rows.length}件作成しました`);
+    } catch (err) {
+      setStatus(`<span class="err">✗ 読み込みに失敗しました: ${err.message}</span>`);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function renderFieldCheckboxes() {
+  const grid = document.getElementById('labelFieldsGrid');
+  grid.innerHTML = '';
+  const fields = [{ key: 'ch', text: 'Ch（連番）' }, ...excelColumns.map(c => ({ key: c, text: c }))];
+  fields.forEach(f => {
+    const row = document.createElement('div');
+    row.className = 'field-check-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = selectedFields.has(f.key);
+    cb.addEventListener('change', () => {
+      if (cb.checked) selectedFields.add(f.key); else selectedFields.delete(f.key);
+      regenerateAutoLabels();
+      labelQueue.forEach(item => {
+        if (item.rowIndex != null) item.text = buildQueueLabelText(item.rowIndex, item.data);
+      });
+      renderQueueList();
+      syncLegendDraft();
+      if (originalImage) drawLabels(detectedComponents);
+      if (detectedComponents.length > 0) renderTable(detectedComponents);
+    });
+    const cbLabel = document.createElement('label');
+    cbLabel.className = 'field-check-label';
+    cbLabel.append(cb, document.createTextNode(f.text));
+    row.appendChild(cbLabel);
+
+    if (f.key !== 'ch') {
+      const alias = document.createElement('input');
+      alias.type = 'text';
+      alias.className = 'field-alias-input';
+      alias.placeholder = '単位（例: V）※項目名の後に[単位]の形で表示';
+      alias.value = fieldAliases[f.key] || '';
+      alias.addEventListener('input', () => {
+        fieldAliases[f.key] = alias.value;
+        syncLegendDraft();
+      });
+      row.appendChild(alias);
+    }
+
+    grid.appendChild(row);
+  });
+  document.getElementById('labelFieldsSection').style.display = 'block';
+  syncLegendDraft();
+}
+
+// Keeps the legend textarea automatically in sync with the currently selected
+// fields, so the user no longer has to press "選択項目から下書き" by hand.
+function syncLegendDraft() {
+  const el = document.getElementById('legendText');
+  if (el) el.value = buildLegendDraftText();
+}
+
+// Attach excel rows to auto-detected components in ch order (position-based, so it stays
+// correct after re-detecting or deleting false-positive boxes).
+function mapExcelDataToComponents() {
+  if (excelRows.length === 0) return;
+  // Map by the channel NUMBER itself (Ch17 -> excelRows[16]), not by position
+  // in the array — otherwise a batch photo that starts at a channel other
+  // than 1 would always pull rows from the top of the spreadsheet instead of
+  // the rows that actually correspond to its channel range.
+  detectedComponents.forEach(c => {
+    if (c.ch != null) c.data = excelRows[c.ch - 1] || null;
+  });
+}
+
+function buildLabelText(c) {
+  const parts = [];
+  if (selectedFields.has('ch') && c.ch != null) parts.push(`Ch${c.ch}`);
+  excelColumns.forEach(col => {
+    if (selectedFields.has(col) && c.data && c.data[col] !== undefined && c.data[col] !== '') {
+      parts.push(String(c.data[col]));
+    }
+  });
+  if (parts.length === 0) return c.ch != null ? `Ch${c.ch}` : (c.label || '');
+  return parts.join('\n');
+}
+
+function regenerateAutoLabels() {
+  detectedComponents.forEach(c => {
+    if (c.autoLabel) c.label = buildLabelText(c);
+  });
+}
+
+// ---------- Label queue (manual placement workflow) ----------
+function buildQueueLabelText(rowIndex, row) {
+  const parts = [];
+  if (selectedFields.has('ch')) parts.push(`Ch${rowIndex + 1}`);
+  excelColumns.forEach(col => {
+    if (selectedFields.has(col) && row[col] !== undefined && row[col] !== '') {
+      parts.push(String(row[col]));
+    }
+  });
+  if (parts.length === 0) parts.push(`Ch${rowIndex + 1}`);
+  return parts.join('\n');
+}
+
+function buildQueueFromExcel() {
+  if (excelRows.length === 0) return;
+  labelQueue = excelRows.map((row, i) => ({
+    id: queueIdCounter++,
+    rowIndex: i,
+    text: buildQueueLabelText(i, row),
+    data: row
+  }));
+  renderQueueList();
+}
+
+document.getElementById('buildQueueBtn').addEventListener('click', () => {
+  buildQueueFromExcel();
+  setStatus(`<span class="ok">✓ 配置待ちのラベルを${labelQueue.length}件作成しました</span>`);
+});
+
+document.getElementById('addCustomLabelBtn').addEventListener('click', addCustomLabelToQueue);
+document.getElementById('customLabelText').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addCustomLabelToQueue();
+});
+
+function addCustomLabelToQueue() {
+  const input = document.getElementById('customLabelText');
+  const text = input.value.trim();
+  if (!text) return;
+  labelQueue.push({ id: queueIdCounter++, rowIndex: null, text, data: null });
+  input.value = '';
+  renderQueueList();
+}
+
+function renderQueueList() {
+  const list = document.getElementById('queueList');
+  document.getElementById('queueCount').textContent = labelQueue.length;
+  list.innerHTML = '';
+  labelQueue.forEach(item => {
+    const armed = !!(armedPlacement && armedPlacement.queueId === item.id);
+    const row = document.createElement('div');
+    row.className = 'queue-item' + (armed ? ' armed' : '');
+
+    const textEl = document.createElement('span');
+    textEl.className = 'queue-item-text';
+    textEl.textContent = item.text.replace(/\n/g, ' / ');
+    row.appendChild(textEl);
+
+    const placeBtn = document.createElement('button');
+    placeBtn.className = 'queue-place-btn';
+    placeBtn.type = 'button';
+    placeBtn.textContent = armed ? '配置中…' : '配置';
+    placeBtn.addEventListener('click', () => {
+      if (armed) {
+        setPlacementMode(false);
+      } else {
+        armedPlacement = { text: item.text, data: item.data, queueId: item.id };
+        setPlacementMode(true);
+      }
+    });
+    row.appendChild(placeBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'del-btn';
+    delBtn.type = 'button';
+    delBtn.textContent = '✕';
+    delBtn.title = 'キューから削除';
+    delBtn.addEventListener('click', () => {
+      labelQueue = labelQueue.filter(q => q.id !== item.id);
+      if (armed) setPlacementMode(false);
+      renderQueueList();
+    });
+    row.appendChild(delBtn);
+
+    list.appendChild(row);
+  });
+  document.getElementById('labelQueueSection').style.display =
+    (labelQueue.length > 0 || excelRows.length > 0) ? 'block' : 'none';
+}
+
+// ---------- Legend ----------
+// Best-effort default alias for common column naming patterns (e.g. CA_VOLT -> V,
+// CA_TIME_ -> s). The user can always override it in the alias input.
+// Best-effort unit guess from common naming conventions, so the legend can
+// read "Eon[V]" / "on_s[s]" without the user having to type every unit by hand.
+function guessFieldAlias(col) {
+  const c = col.toLowerCase();
+  if (/(^|_)s$/.test(c) || /time/.test(c) || /sec/.test(c) || /delay/.test(c) || /duration/.test(c)) return 's';
+  if (/volt/.test(c) || /^e(on|off)?($|_)/.test(c)) return 'V';
+  if (/curr(ent)?/.test(c) || /(^|_)amp/.test(c)) return 'A';
+  if (/temp/.test(c)) return '℃';
+  if (/freq/.test(c) || /hz/.test(c)) return 'Hz';
+  if (/duty/.test(c) || /percent/.test(c)) return '%';
+  if (/resist/.test(c) || /ohm/.test(c)) return 'Ω';
+  return '';
+}
+
+function buildLegendDraftText() {
+  const lines = [];
+  if (selectedFields.has('ch')) lines.push('Ch');
+  excelColumns.forEach(col => {
+    if (selectedFields.has(col)) {
+      const unit = (fieldAliases[col] || '').trim() || guessFieldAlias(col);
+      lines.push(unit ? `${col}[${unit}]` : col);
+    }
+  });
+  if (lines.length === 0) lines.push('Ch');
+  return lines.join('\n');
+}
+
+document.getElementById('legendTemplateBtn').addEventListener('click', () => {
+  document.getElementById('legendText').value = buildLegendDraftText();
+});
+
+placeLegendBtn.addEventListener('click', () => {
+  if (!originalImage) return;
+  if (armedPlacement && armedPlacement.isLegend) {
+    setPlacementMode(false);
+    return;
+  }
+  const text = document.getElementById('legendText').value.trim();
+  if (!text) {
+    setStatus('<span class="err">✗ 凡例のテキストを入力してください</span>');
+    return;
+  }
+  armedPlacement = { text, data: null, queueId: null, isLegend: true };
+  setPlacementMode(true);
+});
+
+// ---------- Image edit (interactive zoom / crop) ----------
+imageEditBtn.addEventListener('click', () => {
+  if (!originalImage) return;
+  if (imageEditMode) exitImageEditMode();
+  else enterImageEditMode();
+});
+
+function enterImageEditMode() {
+  imageEditMode = true;
+  imageEditBtn.classList.add('btn-primary');
+  imageEditBtn.classList.remove('btn-secondary');
+  imageEditBtn.textContent = '✕ 閉じる';
+  imageCardTitle.textContent = '画像を編集';
+  loadImageView.style.visibility = 'hidden';
+  editImageView.style.visibility = 'visible';
+  activateZoomTool();
+}
+
+function exitImageEditMode() {
+  imageEditMode = false;
+  imageEditBtn.classList.remove('btn-primary');
+  imageEditBtn.classList.add('btn-secondary');
+  imageEditBtn.textContent = '編集';
+  imageCardTitle.textContent = '画像を読み込む';
+  loadImageView.style.visibility = 'visible';
+  editImageView.style.visibility = 'hidden';
+  deactivateZoomTool();
+  setCropMode(false);
+  panDragStart = null;
+  outputCanvas.style.cursor = '';
+  if (originalImage) drawLabels(detectedComponents);
+}
+
+zoomToolBtn.addEventListener('click', activateZoomTool);
+
+function activateZoomTool() {
+  setCropMode(false);
+  zoomToolActive = true;
+  viewZoom = 1;
+  viewOffsetX = 0;
+  viewOffsetY = 0;
+  zoomToolBtn.classList.add('btn-primary');
+  zoomToolBtn.classList.remove('btn-secondary');
+  cropModeBtn.classList.remove('btn-primary');
+  cropModeBtn.classList.add('btn-secondary');
+  imageEditActions.style.display = 'flex';
+  setStatus('<span class="info">タッチパッドのピンチ／マウスホイールでズーム、ドラッグで移動できます</span>');
+  if (originalImage) drawZoomPreview();
+}
+
+function deactivateZoomTool() {
+  zoomToolActive = false;
+  viewZoom = 1;
+  viewOffsetX = 0;
+  viewOffsetY = 0;
+  panDragStart = null;
+  zoomToolBtn.classList.remove('btn-primary');
+  zoomToolBtn.classList.add('btn-secondary');
+  imageEditActions.style.display = 'none';
+}
+
+// The part of the photo that gets zoomed/cropped away isn't thrown out — the
+// pre-edit image (and label positions) is kept here so it can be restored later.
+function pushImageEditHistory() {
+  imageEditHistory.push({
+    image: originalImage,
+    width: outputCanvas.width,
+    height: outputCanvas.height,
+    components: detectedComponents.map(c => ({ ...c }))
+  });
+  if (imageEditHistory.length > 20) imageEditHistory.shift();
+  imageEditUndoBtn.disabled = false;
+}
+
+imageEditUndoBtn.addEventListener('click', () => {
+  if (imageEditHistory.length === 0) return;
+  const prev = imageEditHistory.pop();
+  imageEditUndoBtn.disabled = imageEditHistory.length === 0;
+
+  originalImage = prev.image;
+  outputCanvas.width = prev.width;
+  outputCanvas.height = prev.height;
+  detectedComponents = prev.components;
+  selectedIndex = null;
+  fitCanvasToViewport();
+
+  drawLabels(detectedComponents);
+  if (detectedComponents.length > 0) {
+    document.getElementById('tableSection').style.display = 'block';
+    renderTable(detectedComponents);
+  } else {
+    document.getElementById('tableSection').style.display = 'none';
+  }
+  downloadBtn.disabled = detectedComponents.length === 0;
+  setStatus('<span class="ok">✓ 画像編集を元に戻しました（切り捨てた部分を復元）</span>');
+});
+
+// Keeps the image point under the cursor fixed while the zoom level changes,
+// which is what makes pinch/wheel zoom feel like it's "zooming toward the pointer".
+function zoomAt(cx, cy, newZoom) {
+  newZoom = Math.min(8, Math.max(1, newZoom));
+  const srcX = viewOffsetX + cx / viewZoom;
+  const srcY = viewOffsetY + cy / viewZoom;
+  viewZoom = newZoom;
+  viewOffsetX = srcX - cx / viewZoom;
+  viewOffsetY = srcY - cy / viewZoom;
+  clampView();
+}
+
+function clampView() {
+  const W = outputCanvas.width, H = outputCanvas.height;
+  const regionW = W / viewZoom;
+  const regionH = H / viewZoom;
+  viewOffsetX = Math.min(Math.max(viewOffsetX, 0), Math.max(0, W - regionW));
+  viewOffsetY = Math.min(Math.max(viewOffsetY, 0), Math.max(0, H - regionH));
+}
+
+function drawZoomPreview() {
+  if (!originalImage) return;
+  const W = outputCanvas.width, H = outputCanvas.height;
+  const regionW = W / viewZoom;
+  const regionH = H / viewZoom;
+  ctx.drawImage(originalImage, viewOffsetX, viewOffsetY, regionW, regionH, 0, 0, W, H);
+}
+
+outputCanvas.addEventListener('wheel', e => {
+  if (!zoomToolActive || !originalImage) return;
+  e.preventDefault();
+  const { cx, cy } = toCanvasCoords(e);
+  if (e.ctrlKey) {
+    // Browsers report trackpad pinch gestures as wheel events with ctrlKey set.
+    const factor = Math.exp(-e.deltaY * 0.004);
+    zoomAt(cx, cy, viewZoom * factor);
+  } else {
+    // Two-finger scroll = pan.
+    viewOffsetX += e.deltaX / viewZoom;
+    viewOffsetY += e.deltaY / viewZoom;
+    clampView();
+  }
+  drawZoomPreview();
+}, { passive: false });
+
+imageEditCancelBtn.addEventListener('click', () => {
+  // Discard the pending zoom preview but keep the edit card open.
+  activateZoomTool();
+});
+
+imageEditApplyBtn.addEventListener('click', () => {
+  if (!originalImage) return;
+  if (viewZoom <= 1.001) { activateZoomTool(); return; }
+
+  pushImageEditHistory();
+  const W = outputCanvas.width, H = outputCanvas.height;
+  const regionW = W / viewZoom;
+  const regionH = H / viewZoom;
+  const sx = viewOffsetX, sy = viewOffsetY;
+  const scale = viewZoom;
+
+  const off = document.createElement('canvas');
+  off.width = W;
+  off.height = H;
+  const offCtx = off.getContext('2d');
+  offCtx.imageSmoothingEnabled = true;
+  offCtx.imageSmoothingQuality = 'high';
+  offCtx.drawImage(originalImage, sx, sy, regionW, regionH, 0, 0, W, H);
+
+  const newImg = new Image();
+  newImg.onload = () => {
+    // Not pushed onto the undo stack: the image bitmap itself changed, not just
+    // label positions, so a plain label-snapshot undo can't restore this safely.
+    originalImage = newImg;
+    // outputCanvas dimensions stay the same — only the framing changes.
+
+    detectedComponents.forEach(c => {
+      c.x = (c.x - sx) * scale;
+      c.y = (c.y - sy) * scale;
+      c.w *= scale;
+      c.h *= scale;
+      c.cx = c.x + c.w / 2;
+      c.cy = c.y + c.h / 2;
+    });
+    detectedComponents = detectedComponents.filter(c =>
+      c.x + c.w > 0 && c.y + c.h > 0 && c.x < W && c.y < H
+    );
+    renumberChannels(detectedComponents);
+    mapExcelDataToComponents();
+    regenerateAutoLabels();
+
+    selectedIndex = null;
+    activateZoomTool(); // stay in the edit card, ready for another adjustment
+    drawLabels(detectedComponents);
+    if (detectedComponents.length > 0) {
+      renderTable(detectedComponents);
+    } else {
+      document.getElementById('tableSection').style.display = 'none';
+    }
+    setStatus('<span class="ok">✓ ズームを適用しました</span>');
+  };
+  newImg.src = off.toDataURL('image/png');
+});
+
+cropModeBtn.addEventListener('click', () => {
+  if (!originalImage) return;
+  setCropMode(!cropMode);
+});
+
+cropCancelBtn.addEventListener('click', () => {
+  // Discard the pending crop rectangle but keep the edit card open.
+  activateZoomTool();
+});
+
+cropApplyBtn.addEventListener('click', applyCrop);
+
+function setCropMode(on) {
+  if (on) {
+    setPlacementMode(false);
+    deactivateZoomTool();
+  }
+  cropMode = on;
+  cropModeBtn.classList.toggle('btn-primary', on);
+  cropModeBtn.classList.toggle('btn-secondary', !on);
+  outputCanvas.classList.toggle('crop-mode', on);
+  outputCanvas.style.cursor = '';
+  if (!on) {
+    cropRect = null;
+    cropDragStart = null;
+  }
+  cropActions.style.display = on ? 'flex' : 'none';
+  if (on) {
+    setSelected(null);
+    setStatus('<span class="info">画像上をドラッグしてトリミングする範囲を選んでください</span>');
+  }
+  if (originalImage) drawLabels(detectedComponents);
+}
+
+function drawCropOverlay() {
+  if (!cropRect) return;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+  const { x, y, w, h } = cropRect;
+  if (w > 0 && h > 0) {
+    ctx.drawImage(originalImage, x, y, w, h, x, y, w, h);
+  }
+  ctx.strokeStyle = '#0099ff';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.strokeRect(x, y, w, h);
+  ctx.setLineDash([]);
+}
+
+function applyCrop() {
+  if (!cropRect || cropRect.w < 5 || cropRect.h < 5) return;
+  const cx0 = Math.max(0, Math.round(cropRect.x));
+  const cy0 = Math.max(0, Math.round(cropRect.y));
+  const cw = Math.min(Math.round(cropRect.w), outputCanvas.width - cx0);
+  const ch = Math.min(Math.round(cropRect.h), outputCanvas.height - cy0);
+  if (cw < 5 || ch < 5) return;
+
+  pushImageEditHistory();
+  const off = document.createElement('canvas');
+  off.width = cw;
+  off.height = ch;
+  const offCtx = off.getContext('2d');
+  offCtx.imageSmoothingEnabled = true;
+  offCtx.imageSmoothingQuality = 'high';
+  offCtx.drawImage(originalImage, cx0, cy0, cw, ch, 0, 0, cw, ch);
+
+  const newImg = new Image();
+  newImg.onload = () => {
+    // Not pushed onto the undo stack — see the equivalent note in the zoom apply handler.
+    originalImage = newImg;
+    outputCanvas.width = cw;
+    outputCanvas.height = ch;
+
+    detectedComponents = detectedComponents
+      .map(c => ({ ...c, x: c.x - cx0, y: c.y - cy0, cx: c.cx - cx0, cy: c.cy - cy0 }))
+      .filter(c => c.x + c.w > 0 && c.y + c.h > 0 && c.x < cw && c.y < ch);
+    renumberChannels(detectedComponents);
+    mapExcelDataToComponents();
+    regenerateAutoLabels();
+
+    selectedIndex = null;
+    fitCanvasToViewport();
+    activateZoomTool(); // stay in the edit card, ready for another adjustment
+    drawLabels(detectedComponents);
+    if (detectedComponents.length > 0) {
+      renderTable(detectedComponents);
+    } else {
+      document.getElementById('tableSection').style.display = 'none';
+    }
+    setStatus(`<span class="ok">✓ トリミングしました</span>\n${cw}×${ch}px`);
+  };
+  newImg.src = off.toDataURL('image/png');
+}
+
+// ---------- Detection ----------
+detectBtn.addEventListener('click', async () => {
+  if (!originalImage) return;
+  // Captured so this run can tell if リセット (or a new detection) invalidated
+  // it while it was awaiting — see the runId checks below.
+  const runId = ++detectionRunId;
+  channelStartNumber = Math.max(1, parseInt(document.getElementById('chStartNumber').value) || 1);
+  hideDetectionCandidates();
+  moreCandidatesBtn.style.display = 'none';
+  detectionResumeState = null;
+  setDetectionLockUi(true);
+  detectBtn.disabled = true;
+  detectSpinner.style.visibility = 'visible';
+  setStatus('<span class="info">一致する設定を自動で探しています…</span>');
+  await new Promise(r => setTimeout(r, 30));
+  if (runId !== detectionRunId) return; // cancelled while waiting
+
+  // Draw original
+  ctx.drawImage(originalImage, 0, 0);
+
+  // 数千px級の写真をそのまま何十〜何百通りもの閾値でスイープすると非常に重く
+  // （ファンが唸るほどCPUを使う）なるため、検出処理自体は縮小コピー上で行い、
+  // 結果の座標だけ元解像度に戻す（scaleComponentsで復元）。見た目・検出結果への
+  // 影響はほぼない一方、処理量はおおむね (元解像度/DETECT_MAX_DIM)^2 分の1になる。
+  const fullW = outputCanvas.width, fullH = outputCanvas.height;
+  const detectScale = Math.min(1, DETECT_MAX_DIM / Math.max(fullW, fullH));
+  let imageData;
+  if (detectScale < 1) {
+    const dw = Math.max(1, Math.round(fullW * detectScale));
+    const dh = Math.max(1, Math.round(fullH * detectScale));
+    const detectCanvas = document.createElement('canvas');
+    detectCanvas.width = dw; detectCanvas.height = dh;
+    const detectCtx = detectCanvas.getContext('2d');
+    detectCtx.drawImage(outputCanvas, 0, 0, dw, dh);
+    imageData = detectCtx.getImageData(0, 0, dw, dh);
+  } else {
+    imageData = ctx.getImageData(0, 0, fullW, fullH);
+  }
+
+  // When Excel data is loaded, the goal isn't just "found something" — it's
+  // "found exactly as many as there are data rows" so every row maps to a label.
+  // An explicit end-channel number overrides this: it says exactly how many
+  // labels this photo should contain, which also lets it work without Excel.
+  const endChValue = parseInt(document.getElementById('chEndNumber').value);
+  const targetCount = (!isNaN(endChValue) && endChValue >= channelStartNumber)
+    ? (endChValue - channelStartNumber + 1)
+    : (excelRows.length > 0 ? excelRows.length : null);
+
+  // Stop as soon as one matching candidate turns up rather than sweeping every
+  // combination — much faster in the common case. If it turns out to be wrong,
+  // 「さらに検索」 resumes this same state to look for more.
+  const state = createDetectionSweepState(imageData, { threshold: baseThreshold, minW: baseMinW * detectScale, minH: baseMinH * detectScale }, targetCount);
+  state.scale = detectScale;
+  await runDetectionSweep(state, runId, true);
+  if (runId !== detectionRunId) return; // cancelled during the search
+  detectionResumeState = state;
+
+  let found = state.candidates;
+  if (found.length === 0 && state.exhausted && state.closest) {
+    found = [{ result: state.closest.result, params: state.closest.params }];
+  }
+
+  let components = [];
+  let usedParams = null;
+  if (found.length === 1) {
+    components = found[0].result;
+    usedParams = found[0].params;
+    baseThreshold = usedParams.threshold;
+    baseMinW = usedParams.minW;
+    baseMinH = usedParams.minH;
+  }
+
+  if (detectedComponents.length > 0) pushUndoSnapshot(); // detection replaces whatever was already placed
+  detectedComponents = components;
+  selectedIndex = null;
+
+  if (components.length === 0) {
+    setStatus('<span class="err">✗ いろいろなパターンを試しましたが検出できませんでした。\n手動でラベルを配置する方法をお試しください。</span>');
+    detectBtn.disabled = false;
+    detectSpinner.style.visibility = 'hidden';
+    setDetectionLockUi(false);
+    return;
+  }
+
+  renumberChannels(components); // applies the starting channel number chosen above
+  mapExcelDataToComponents();
+  regenerateAutoLabels();
+  drawLabels(components);
+  renderTable(components);
+  document.getElementById('tableSection').style.display = 'block';
+  downloadBtn.disabled = false;
+  detectBtn.disabled = false;
+  detectSpinner.style.visibility = 'hidden';
+  setDetectionLockUi(false);
+
+  // A target count was given and the sweep hasn't been fully searched yet —
+  // there may be other layouts with the same count, so offer to keep looking.
+  if (targetCount != null && !state.exhausted) {
+    moreCandidatesBtn.style.display = 'flex';
+    moreCandidatesBtn.disabled = false;
+  }
+
+  const detectedChCount = components.filter(c => c.ch != null).length;
+  // Compare against the range the user actually asked for this photo to cover
+  // (targetCount), not the whole spreadsheet — a 12-channel batch photo out of
+  // a 32-row file is a match, not a mismatch, once start/end are specified.
+  const expectedCount = targetCount != null ? targetCount : (excelRows.length > 0 ? excelRows.length : null);
+  const dataMsg = expectedCount != null
+    ? (expectedCount === detectedChCount
+        ? `\nデータ${detectedChCount}件（Ch${channelStartNumber}〜Ch${channelStartNumber + detectedChCount - 1}）を対応付けました`
+        : `\n<span class="err">⚠ 想定数(${expectedCount})と検出数(${detectedChCount})が一致しません</span>`)
+    : '';
+  setStatus(`<span class="ok">✓ ${components.length}個のチャンネルを検出</span>${dataMsg}`);
+});
+
+// If the first candidate 自動でチャンネルを検出 committed turns out to be wrong,
+// this resumes the same sweep from where it left off and collects every other
+// distinct layout matching the target count, then lets the user pick from them.
+moreCandidatesBtn.addEventListener('click', async () => {
+  if (!detectionResumeState || detectionResumeState.exhausted) return;
+  const runId = ++detectionRunId;
+  const state = detectionResumeState;
+  setDetectionLockUi(true);
+  moreCandidatesBtn.disabled = true;
+  setStatus('<span class="info">他の候補を探しています…</span>');
+  await new Promise(r => setTimeout(r, 30));
+  if (runId !== detectionRunId) return; // cancelled while waiting
+
+  await runDetectionSweep(state, runId, false);
+  if (runId !== detectionRunId) return; // cancelled during the search
+
+  setDetectionLockUi(false);
+  moreCandidatesBtn.style.display = 'none';
+
+  if (state.candidates.length <= 1) {
+    setStatus('<span class="info">他に一致する候補は見つかりませんでした</span>');
+    return;
+  }
+  showDetectionCandidates(state.candidates);
+  setStatus(`<span class="info">検出数が一致する候補が${state.candidates.length}件見つかりました。「プレビュー」で確認して正しいものの「使う」を押してください</span>`);
+});
+
+// Builds the full list of threshold / minimum-size combinations to try, in the
+// fixed order they'll be swept in — same list whether this is the fast initial
+// search or a later resumed 「さらに検索」, so a resume can pick up exactly
+// where the first pass left off.
+function buildDetectionAttempts(base, targetCount) {
+  const thresholds = targetCount != null
+    ? Array.from({ length: 23 }, (_, i) => 10 + i * 5) // 10, 15, ..., 120
+    : [...new Set([base.threshold, 30, 40, 50, 60, 70, 80, 90, 100, 110, 25, 20, 15])];
+  const sizeScales = targetCount != null
+    ? [1, 0.85, 0.7, 0.55, 0.4, 0.3, 0.2, 1.3, 1.6, 2]
+    : [1, 0.7, 0.5, 0.35, 0.2, 1.5, 2];
+
+  const attempts = [];
+  const seen = new Set();
+  thresholds.forEach(th => {
+    sizeScales.forEach(sc => {
+      const minW = Math.max(4, Math.round(base.minW * sc));
+      const minH = Math.max(4, Math.round(base.minH * sc));
+      const key = `${th}-${minW}-${minH}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      attempts.push({ threshold: th, minW, minH });
+    });
+  });
+  return attempts;
+}
+
+// Creates the mutable sweep state that runDetectionSweep advances and that
+// gets stashed in detectionResumeState so 「さらに検索」 can continue it later.
+function createDetectionSweepState(imageData, base, targetCount) {
+  return {
+    imageData,
+    targetCount,
+    attempts: buildDetectionAttempts(base, targetCount),
+    index: 0,
+    candidates: [], // exact-count matches with visually distinct box layouts
+    seenShapes: new Set(),
+    closest: null, // closest component count to targetCount, used if no exact match found at all
+    exhausted: false,
+  };
+}
+
+// Advances a sweep state from state.index. When stopAtFirst is true (the fast
+// initial search) it returns as soon as a single new candidate is found, so the
+// UI can commit it immediately instead of waiting for the full sweep. Otherwise
+// (「さらに検索」) it runs to exhaustion, collecting every distinct candidate.
+// Mutates and returns state; the caller checks runId !== detectionRunId to
+// detect cancellation (e.g. リセット pressed mid-sweep).
+async function runDetectionSweep(state, runId, stopAtFirst) {
+  const maxReasonable = 300;
+  const scale = state.scale || 1; // 検出は縮小画像上で行うため、結果はここで元解像度に戻す
+  for (; state.index < state.attempts.length; state.index++) {
+    if (state.index % 6 === 0) await new Promise(r => setTimeout(r, 0)); // keep the UI responsive
+    if (runId !== detectionRunId) return state; // cancelled — stop burning CPU
+    const a = state.attempts[state.index];
+    const rawResult = detectComponents(state.imageData, a.threshold, a.minW, a.minH);
+    if (rawResult.length === 0) continue;
+    const result = scaleComponents(rawResult, 1 / scale);
+    if (!sizeConsistencyOk(result)) continue; // wildly mismatched box sizes = not a real layout, skip
+    // params は次回の自動検出の基準値(baseThreshold/baseMinW/baseMinH)にも使われるため、
+    // 縮小画像基準の値のままにせず元解像度基準に戻しておく。
+    const params = scale !== 1 ? { threshold: a.threshold, minW: a.minW / scale, minH: a.minH / scale } : a;
+
+    if (state.targetCount != null) {
+      if (result.length === state.targetCount) {
+        const sig = resultSignature(result);
+        if (!state.seenShapes.has(sig)) {
+          state.seenShapes.add(sig);
+          state.candidates.push({ result, params });
+          if (stopAtFirst || state.candidates.length >= 12) { state.index++; return state; }
+        }
+      } else {
+        const diff = Math.abs(result.length - state.targetCount);
+        if (!state.closest || diff < state.closest.diff) state.closest = { result, params, diff };
+      }
+    } else if (result.length <= maxReasonable) {
+      state.candidates.push({ result, params });
+      state.index++;
+      return state; // no target count — there's no "further candidates" concept, always stop at first
+    }
+  }
+  state.exhausted = true;
+  return state;
+}
+
+// A real board's channels are roughly the same size; if a candidate's box sizes
+// span a huge range it's almost certainly noise/merges rather than a real layout,
+// so it should never be proposed (let alone auto-adopted).
+function sizeConsistencyOk(result) {
+  if (result.length < 2) return true;
+  const widths = result.map(c => c.w).sort((a, b) => a - b);
+  const heights = result.map(c => c.h).sort((a, b) => a - b);
+  const wRatio = widths[widths.length - 1] / Math.max(1, widths[0]);
+  const hRatio = heights[heights.length - 1] / Math.max(1, heights[0]);
+  return wRatio <= 4 && hRatio <= 4;
+}
+
+// Coarse signature so near-duplicate box layouts (same shapes, tiny pixel jitter
+// from a slightly different threshold) collapse into a single candidate.
+function resultSignature(result) {
+  return result
+    .map(c => `${Math.round(c.x / 5)},${Math.round(c.y / 5)},${Math.round(c.w / 5)},${Math.round(c.h / 5)}`)
+    .sort()
+    .join('|');
+}
+
+// ---------- Detection candidate picker ----------
+function showDetectionCandidates(candidates) {
+  detectionCandidates = candidates;
+  const list = document.getElementById('candidatesList');
+  document.getElementById('candidatesCount').textContent = candidates.length;
+  list.innerHTML = '';
+
+  candidates.forEach((cand, i) => {
+    const item = document.createElement('div');
+    item.className = 'candidate-item';
+
+    const text = document.createElement('div');
+    text.className = 'candidate-item-text';
+    text.textContent = `候補${i + 1}: 閾値${cand.params.threshold} / 幅${cand.params.minW} / 高さ${cand.params.minH}（${cand.result.length}個）`;
+    item.appendChild(text);
+
+    const actions = document.createElement('div');
+    actions.className = 'candidate-item-actions';
+
+    const previewBtn = document.createElement('button');
+    previewBtn.className = 'btn btn-secondary';
+    previewBtn.type = 'button';
+    previewBtn.textContent = '👁 プレビュー';
+    previewBtn.addEventListener('click', () => previewCandidate(cand));
+    actions.appendChild(previewBtn);
+
+    const useBtn = document.createElement('button');
+    useBtn.className = 'btn btn-primary';
+    useBtn.type = 'button';
+    useBtn.textContent = '✓ これを使う';
+    useBtn.addEventListener('click', () => commitCandidate(cand));
+    actions.appendChild(useBtn);
+
+    item.appendChild(actions);
+    list.appendChild(item);
+  });
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn btn-secondary';
+  cancelBtn.type = 'button';
+  cancelBtn.style.marginTop = '4px';
+  cancelBtn.textContent = 'キャンセル（候補を採用しない）';
+  cancelBtn.addEventListener('click', () => {
+    hideDetectionCandidates();
+    drawLabels(detectedComponents);
+    setStatus('<span class="info">候補選択をキャンセルしました</span>');
+  });
+  list.appendChild(cancelBtn);
+
+  document.getElementById('candidatesSection').style.display = 'block';
+}
+
+function hideDetectionCandidates() {
+  detectionCandidates = [];
+  document.getElementById('candidatesSection').style.display = 'none';
+  document.getElementById('candidatesList').innerHTML = '';
+}
+
+function previewCandidate(candidate) {
+  const savedSelected = selectedIndex;
+  selectedIndex = null;
+  drawLabels(candidate.result);
+  selectedIndex = savedSelected;
+}
+
+function commitCandidate(candidate) {
+  baseThreshold = candidate.params.threshold;
+  baseMinW = candidate.params.minW;
+  baseMinH = candidate.params.minH;
+
+  pushUndoSnapshot();
+  detectedComponents = candidate.result;
+  selectedIndex = null;
+  hideDetectionCandidates();
+
+  renumberChannels(detectedComponents); // applies the chosen starting channel number
+  mapExcelDataToComponents();
+  regenerateAutoLabels();
+  drawLabels(detectedComponents);
+  renderTable(detectedComponents);
+  document.getElementById('tableSection').style.display = 'block';
+  downloadBtn.disabled = false;
+
+  const detectedChCount = detectedComponents.filter(c => c.ch != null).length;
+  const endChValue = parseInt(document.getElementById('chEndNumber').value);
+  const expectedCount = (!isNaN(endChValue) && endChValue >= channelStartNumber)
+    ? (endChValue - channelStartNumber + 1)
+    : (excelRows.length > 0 ? excelRows.length : null);
+  const dataMsg = expectedCount != null
+    ? (expectedCount === detectedChCount
+        ? `\nデータ${detectedChCount}件（Ch${channelStartNumber}〜Ch${channelStartNumber + detectedChCount - 1}）を対応付けました`
+        : `\n<span class="err">⚠ 想定数(${expectedCount})と検出数(${detectedChCount})が一致しません</span>`)
+    : '';
+  setStatus(`<span class="ok">✓ 候補を採用しました（${detectedComponents.length}個）</span>${dataMsg}`);
+}
+
+// detectComponentsは縮小画像上で走らせるため、返ってきた座標(x/y/w/h/cx/cy)を
+// 元解像度に戻すためのヘルパー。ch/label等の非幾何プロパティはそのまま引き継ぐ。
+function scaleComponents(components, factor) {
+  if (factor === 1) return components;
+  return components.map(c => ({
+    ...c, x: c.x*factor, y: c.y*factor, w: c.w*factor, h: c.h*factor, cx: c.cx*factor, cy: c.cy*factor
+  }));
+}
+
+// ---------- Component detection using connected components ----------
+function detectComponents(imageData, threshold, minW, minH) {
+  const w = imageData.width, h = imageData.height;
+  const data = imageData.data;
+
+  // Grayscale + binary mask: dark pixels = component
+  const mask = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const r = data[i*4], g = data[i*4+1], b = data[i*4+2];
+    const gray = 0.299*r + 0.587*g + 0.114*b;
+    mask[i] = gray < (255 - threshold) ? 1 : 0;
+  }
+
+  // Connected components (union-find style, row-scan)
+  const label = new Int32Array(w * h).fill(-1);
+  let nextLabel = 0;
+  const parent = [];
+
+  function find(x) {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  }
+  function union(a, b) {
+    a = find(a); b = find(b);
+    if (a !== b) parent[b] = a;
+  }
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      if (!mask[idx]) continue;
+      const up = y > 0 ? label[(y-1)*w + x] : -1;
+      const left = x > 0 ? label[y*w + x - 1] : -1;
+      if (up === -1 && left === -1) {
+        label[idx] = nextLabel;
+        parent.push(nextLabel);
+        nextLabel++;
+      } else if (up !== -1 && left === -1) {
+        label[idx] = up;
+      } else if (left !== -1 && up === -1) {
+        label[idx] = left;
+      } else {
+        label[idx] = left;
+        union(up, left);
+      }
+    }
+  }
+
+  // Gather bounding boxes per label
+  const boxes = {};
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const l = label[y*w + x];
+      if (l === -1) continue;
+      const root = find(l);
+      if (!boxes[root]) boxes[root] = { x1: x, y1: y, x2: x, y2: y, count: 0 };
+      const b = boxes[root];
+      if (x < b.x1) b.x1 = x;
+      if (y < b.y1) b.y1 = y;
+      if (x > b.x2) b.x2 = x;
+      if (y > b.y2) b.y2 = y;
+      b.count++;
+    }
+  }
+
+  // Filter by size + fill ratio
+  let rects = Object.values(boxes).filter(b => {
+    const bw = b.x2 - b.x1, bh = b.y2 - b.y1;
+    if (bw < minW || bh < minH) return false;
+    const area = bw * bh;
+    const fill = b.count / area;
+    return fill > 0.15 && fill < 0.98;
+  });
+
+  // Merge overlapping / close boxes (group nearby ones)
+  rects = mergeClose(rects);
+
+  // Assign channel numbers: left-to-right columns, top-to-bottom rows
+  // Column grouping: cluster by x center
+  rects.forEach(r => {
+    r.cx = (r.x1 + r.x2) / 2;
+    r.cy = (r.y1 + r.y2) / 2;
+  });
+
+  // Cluster columns by cx
+  // Looser than a "neat grid" would need, since real photos rarely have
+  // perfectly column-aligned components — this keeps slightly-off columns
+  // from getting split apart (which would break the intended top-to-bottom,
+  // column-by-column numbering order).
+  const colTolerance = Math.max(50, w * 0.08);
+  const sorted = [...rects].sort((a, b) => a.cx - b.cx);
+  const cols = [];
+  for (const r of sorted) {
+    let placed = false;
+    for (const col of cols) {
+      if (Math.abs(col.centerX - r.cx) < colTolerance) {
+        col.items.push(r);
+        col.centerX = col.items.reduce((s,i)=>s+i.cx,0)/col.items.length;
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) cols.push({ centerX: r.cx, items: [r] });
+  }
+
+  // Sort columns left to right, items in each column top to bottom
+  cols.sort((a, b) => a.centerX - b.centerX);
+  let ch = 1;
+  const result = [];
+  cols.forEach((col, ci) => {
+    col.items.sort((a, b) => a.cy - b.cy);
+    col.items.forEach((r, ri) => {
+      // Anything below the first row in its column risks the label (which
+      // floats above its box by default) overlapping the row above it, so
+      // default those to "below" instead.
+      const labelPos = ri === 0 ? 'above' : 'below';
+      result.push({ ch, col: ci+1, row: ri+1, x: r.x1, y: r.y1, w: r.x2-r.x1, h: r.y2-r.y1, cx: r.cx, cy: r.cy, label: `Ch${ch}`, autoLabel: true, labelPos });
+      ch++;
+    });
+  });
+
+  return result;
+}
+
+function mergeClose(rects) {
+  let merged = true;
+  while (merged) {
+    merged = false;
+    outer: for (let i = 0; i < rects.length; i++) {
+      for (let j = i+1; j < rects.length; j++) {
+        const a = rects[i], b = rects[j];
+        const gap = 12;
+        if (a.x1 - gap <= b.x2 && b.x1 - gap <= a.x2 &&
+            a.y1 - gap <= b.y2 && b.y1 - gap <= a.y2) {
+          rects[i] = {
+            x1: Math.min(a.x1,b.x1), y1: Math.min(a.y1,b.y1),
+            x2: Math.max(a.x2,b.x2), y2: Math.max(a.y2,b.y2),
+            count: a.count + b.count
+          };
+          rects.splice(j, 1);
+          merged = true;
+          break outer;
+        }
+      }
+    }
+  }
+  return rects;
+}
+
+// ---------- Draw labels ----------
+function getLabelPosition() {
+  const el = document.getElementById('labelPosition');
+  return el && el.value === 'below' ? 'below' : 'above';
+}
+
+// Each label can override the global default via c.labelPos ('above' | 'below' | null).
+function effectiveLabelPos(c) {
+  return c.labelPos || getLabelPosition();
+}
+
+function drawLabels(components) {
+  ctx.drawImage(originalImage, 0, 0);
+  const fontSize = parseInt(document.getElementById('fontSize').value);
+  const labelColor = document.getElementById('labelColor').value;
+
+  components.forEach((c, idx) => {
+    const selected = idx === selectedIndex;
+
+    if (c.isLegend) {
+      drawLegendPanel(c, selected);
+      return;
+    }
+
+    // Box outline
+    ctx.strokeStyle = selected ? '#ff3b3b' : labelColor;
+    ctx.lineWidth = selected ? 3 : 2;
+    ctx.setLineDash(selected ? [6, 4] : []);
+    ctx.strokeRect(c.x + 1, c.y + 1, c.w - 2, c.h - 2);
+    ctx.setLineDash([]);
+
+    // Label background (supports multi-line labels, e.g. "Ch5\n300")
+    ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+    const lines = (c.label || '').split('\n').filter(l => l !== '');
+    if (lines.length > 0) {
+      const lineHeight = fontSize * 1.15;
+      const tw = Math.max(...lines.map(l => ctx.measureText(l).width));
+      const pad = 3;
+      const lx = c.x;
+      const blockH = lineHeight * lines.length + pad * 2;
+      let ly;
+      if (effectiveLabelPos(c) === 'below') {
+        ly = Math.min(c.y + c.h + 2, outputCanvas.height - blockH);
+      } else {
+        ly = Math.max(0, c.y - blockH - 2);
+      }
+
+      ctx.fillStyle = selected ? '#ff3b3b' : labelColor;
+      ctx.fillRect(lx, ly, tw + pad*2, blockH);
+
+      // Label text
+      ctx.fillStyle = selected ? '#ffffff' : '#0f1117';
+      ctx.textBaseline = 'alphabetic';
+      lines.forEach((line, i) => {
+        const baseline = ly + pad + fontSize + i * lineHeight;
+        ctx.fillText(line, lx + pad, baseline);
+      });
+    }
+
+    drawResizeHandle(c, selected);
+  });
+}
+
+// Legends are rendered as a self-contained text panel (no channel outline), since
+// they describe the labeling scheme rather than pointing at a physical component.
+function drawLegendPanel(c, selected) {
+  const pad = 10;
+  const fontSize = parseInt(document.getElementById('legendFontSize').value) || 20;
+  const labelColor = document.getElementById('legendColor').value;
+  ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+  const lines = (c.label || '').split('\n').filter(l => l !== '');
+  const lineHeight = fontSize * 1.25;
+  const contentW = (lines.length ? Math.max(...lines.map(l => ctx.measureText(l).width)) : 0) + pad * 2;
+  const contentH = (lines.length ? lineHeight * lines.length : lineHeight) + pad * 2;
+
+  // Panel always hugs its text exactly (no manual resizing) so it never ends up
+  // wider than the text actually needs.
+  c.w = contentW;
+  c.h = contentH;
+  c.cx = c.x + c.w / 2;
+  c.cy = c.y + c.h / 2;
+
+  ctx.fillStyle = 'rgba(15,17,23,0.88)';
+  ctx.strokeStyle = selected ? '#ff3b3b' : labelColor;
+  ctx.lineWidth = selected ? 3 : 2;
+  ctx.setLineDash(selected ? [6, 4] : []);
+  ctx.fillRect(c.x, c.y, c.w, c.h);
+  ctx.strokeRect(c.x + 1, c.y + 1, c.w - 2, c.h - 2);
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.textBaseline = 'alphabetic';
+  lines.forEach((line, i) => {
+    ctx.fillText(line, c.x + pad, c.y + pad + fontSize + i * lineHeight);
+  });
+}
+
+// For a "below" label, the box's bottom edge sits right against the label
+// text, so a bottom-right handle would fight with clicking the label itself —
+// move the handle to the top-right (the edge away from the label) instead.
+function resizeHandleXY(c) {
+  const hx = c.x + c.w;
+  const hy = (!c.isLegend && effectiveLabelPos(c) === 'below') ? c.y : c.y + c.h;
+  return { hx, hy };
+}
+
+function drawResizeHandle(c, selected) {
+  if (!selected) return;
+  const hs = 9;
+  const { hx, hy } = resizeHandleXY(c);
+  ctx.fillStyle = '#ff3b3b';
+  ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs);
+}
+
+// ---------- Table ----------
+function renderTable(components) {
+  const tbody = document.getElementById('channelTableBody');
+  tbody.innerHTML = '';
+  components.forEach((c, idx) => {
+    const tr = document.createElement('tr');
+    if (idx === selectedIndex) tr.classList.add('selected-row');
+    if (c.isLegend) tr.classList.add('legend-row');
+
+    const labelTd = document.createElement('td');
+    const labelInput = document.createElement('textarea');
+    labelInput.rows = 2;
+    labelInput.className = 'label-input';
+    labelInput.value = c.label != null ? c.label : '';
+    let editSnapshotPushed = false;
+    labelInput.addEventListener('focus', () => { editSnapshotPushed = false; });
+    labelInput.addEventListener('input', () => {
+      // Pushed on the first keystroke of this focus session, not on focus
+      // itself — focusing and clicking away without typing anything shouldn't
+      // waste an undo-stack slot on a snapshot that has nothing to undo.
+      if (!editSnapshotPushed) {
+        pushUndoSnapshot();
+        editSnapshotPushed = true;
+      }
+      c.label = labelInput.value;
+      c.autoLabel = false;
+      if (originalImage) drawLabels(detectedComponents);
+    });
+    labelTd.appendChild(labelInput);
+
+    const posTd = document.createElement('td');
+    if (!c.isLegend) {
+      const posBtn = document.createElement('button');
+      posBtn.className = 'pos-toggle-btn';
+      posBtn.type = 'button';
+      const updatePosBtnLabel = () => {
+        const pos = effectiveLabelPos(c);
+        posBtn.textContent = pos === 'below' ? '⬇ 下' : '⬆ 上';
+        posBtn.title = 'クリックで上下を切り替え';
+      };
+      updatePosBtnLabel();
+      posBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        pushUndoSnapshot();
+        c.labelPos = effectiveLabelPos(c) === 'below' ? 'above' : 'below';
+        updatePosBtnLabel();
+        if (originalImage) drawLabels(detectedComponents);
+      });
+      posTd.appendChild(posBtn);
+    } else {
+      posTd.textContent = '-';
+    }
+
+    const colTd = document.createElement('td'); colTd.textContent = c.isLegend ? '凡例' : (c.col != null ? c.col : '-');
+    const rowTd = document.createElement('td'); rowTd.textContent = c.row != null ? c.row : '-';
+    const xTd = document.createElement('td'); xTd.textContent = Math.round(c.cx);
+    const yTd = document.createElement('td'); yTd.textContent = Math.round(c.cy);
+
+    const dataTd = document.createElement('td');
+    dataTd.className = 'data-cell';
+    if (c.data) {
+      const summary = excelColumns.map(col => c.data[col]).filter(v => v !== '' && v != null).join(' / ');
+      dataTd.textContent = summary;
+      dataTd.title = summary;
+    } else {
+      dataTd.textContent = '-';
+    }
+
+    const delTd = document.createElement('td');
+    const delBtn = document.createElement('button');
+    delBtn.className = 'del-btn';
+    delBtn.textContent = '✕';
+    delBtn.title = '削除';
+    delBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      removeComponentAt(idx);
+    });
+    delTd.appendChild(delBtn);
+
+    tr.append(labelTd, posTd, colTd, rowTd, xTd, yTd, dataTd, delTd);
+    tr.addEventListener('click', e => {
+      if (e.target === labelInput || e.target === delBtn) return;
+      setSelected(idx === selectedIndex ? null : idx);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+// ---------- Selection & deletion ----------
+function setSelected(idx) {
+  selectedIndex = idx;
+  if (originalImage) drawLabels(detectedComponents);
+  renderTable(detectedComponents);
+}
+
+function renumberChannels(components) {
+  let ch = channelStartNumber;
+  components.forEach(c => {
+    if (c.ch !== null && c.ch !== undefined) {
+      c.ch = ch;
+      ch++;
+    }
+  });
+}
+
+function removeComponentAt(idx) {
+  pushUndoSnapshot();
+  detectedComponents.splice(idx, 1);
+
+  renumberChannels(detectedComponents);
+  mapExcelDataToComponents();
+  regenerateAutoLabels();
+  if (selectedIndex !== null) {
+    if (selectedIndex === idx) selectedIndex = null;
+    else if (selectedIndex > idx) selectedIndex--;
+  }
+  drawLabels(detectedComponents);
+  renderTable(detectedComponents);
+  if (detectedComponents.length === 0) {
+    document.getElementById('tableSection').style.display = 'none';
+    downloadBtn.disabled = true;
+  }
+  setStatus('<span class="ok">✓ ラベルを削除しました</span>\n「変更を元に戻す」で復元できます');
+}
+
+// ---------- Undo / redo (covers delete / move / resize / text edits / position flips) ----------
+function pushUndoSnapshot() {
+  undoStack.push(detectedComponents.map(c => ({ ...c })));
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  undoDeleteBtn.disabled = false;
+  // A fresh change invalidates whatever used to be "ahead" of us.
+  redoStack = [];
+  redoBtn.disabled = true;
+}
+
+function refreshAfterHistoryJump() {
+  selectedIndex = null;
+  drawLabels(detectedComponents);
+  if (detectedComponents.length > 0) {
+    document.getElementById('tableSection').style.display = 'block';
+    renderTable(detectedComponents);
+  } else {
+    document.getElementById('tableSection').style.display = 'none';
+  }
+  downloadBtn.disabled = detectedComponents.length === 0;
+}
+
+undoDeleteBtn.addEventListener('click', () => {
+  if (undoStack.length === 0) return;
+  redoStack.push(detectedComponents.map(c => ({ ...c })));
+  if (redoStack.length > UNDO_LIMIT) redoStack.shift();
+  redoBtn.disabled = false;
+
+  detectedComponents = undoStack.pop();
+  undoDeleteBtn.disabled = undoStack.length === 0;
+
+  refreshAfterHistoryJump();
+  setStatus('<span class="ok">✓ 元に戻しました</span>');
+});
+
+redoBtn.addEventListener('click', () => {
+  if (redoStack.length === 0) return;
+  undoStack.push(detectedComponents.map(c => ({ ...c })));
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  undoDeleteBtn.disabled = false;
+
+  detectedComponents = redoStack.pop();
+  redoBtn.disabled = redoStack.length === 0;
+
+  refreshAfterHistoryJump();
+  setStatus('<span class="ok">✓ やり直しました</span>');
+});
+
+evenBelowBtn.addEventListener('click', () => {
+  if (!originalImage) return;
+  const targets = detectedComponents.filter(c => !c.isLegend && c.ch != null && c.ch % 2 === 0);
+  if (targets.length === 0) {
+    setStatus('<span class="info">偶数chのラベルが見つかりませんでした</span>');
+    return;
+  }
+  pushUndoSnapshot();
+  targets.forEach(c => { c.labelPos = 'below'; });
+  drawLabels(detectedComponents);
+  renderTable(detectedComponents);
+  setStatus(`<span class="ok">✓ 偶数chのラベル${targets.length}件を下側表示にしました</span>`);
+});
+
+document.addEventListener('keydown', e => {
+  // Detection is running — everything but リセット is locked, including shortcuts.
+  if (document.body.classList.contains('detecting-lock')) return;
+
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (selectedIndex === null) return;
+    e.preventDefault();
+    removeComponentAt(selectedIndex);
+    return;
+  }
+
+  const isCtrl = e.ctrlKey || e.metaKey;
+  if (!isCtrl) return;
+  const key = e.key.toLowerCase();
+
+  if (key === 'z' && !e.shiftKey) {
+    // Let a focused text field handle its own native undo instead of hijacking it.
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    e.preventDefault();
+    if (!undoDeleteBtn.disabled) undoDeleteBtn.click();
+    return;
+  }
+
+  // Ctrl+Y (Word-style) and Ctrl+Shift+Z (the more common cross-app convention)
+  // both redo, matching whichever habit the user has.
+  if (key === 'y' || (key === 'z' && e.shiftKey)) {
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    e.preventDefault();
+    if (!redoBtn.disabled) redoBtn.click();
+    return;
+  }
+
+  if (key === 's') {
+    e.preventDefault();
+    if (!downloadBtn.disabled) downloadBtn.click();
+  }
+});
+
+// ---------- Manual label placement (place / move / resize) ----------
+manualAddBtn.addEventListener('click', () => {
+  if (!originalImage) return;
+  if (manualAddMode) {
+    setPlacementMode(false);
+  } else {
+    armedPlacement = { text: `Label${nextManualId}`, data: null, queueId: null };
+    setPlacementMode(true);
+  }
+});
+
+function setPlacementMode(on) {
+  if (on) exitImageEditMode();
+  manualAddMode = on;
+  outputCanvas.classList.toggle('manual-add-mode', on);
+  outputCanvas.style.cursor = '';
+  const armedByQuickAdd = on && armedPlacement && armedPlacement.queueId == null && !armedPlacement.isLegend;
+  const armedByLegend = on && armedPlacement && !!armedPlacement.isLegend;
+  manualAddBtn.classList.toggle('btn-primary', armedByQuickAdd);
+  manualAddBtn.classList.toggle('btn-secondary', !armedByQuickAdd);
+  placeLegendBtn.classList.toggle('btn-primary', armedByLegend);
+  placeLegendBtn.classList.toggle('btn-secondary', !armedByLegend);
+  placeLegendBtn.textContent = armedByLegend ? '配置中…' : '凡例を配置';
+  if (!on) armedPlacement = null;
+  if (on) {
+    setStatus('<span class="info">画像内をクリックしてラベルを配置してください</span>');
+  }
+  renderQueueList();
+}
+
+function toCanvasCoords(e) {
+  const rect = outputCanvas.getBoundingClientRect();
+  const scaleX = outputCanvas.width / rect.width;
+  const scaleY = outputCanvas.height / rect.height;
+  return {
+    cx: (e.clientX - rect.left) * scaleX,
+    cy: (e.clientY - rect.top) * scaleY
+  };
+}
+
+function hitTestHandle(c, cx, cy) {
+  if (c.isLegend) return false; // legend panels auto-fit their text; no manual resize
+  const { hx, hy } = resizeHandleXY(c);
+  return Math.abs(cx - hx) <= HANDLE_SIZE && Math.abs(cy - hy) <= HANDLE_SIZE;
+}
+
+function hitTestBox(c, cx, cy) {
+  if (c.isLegend) {
+    return cx >= c.x && cx <= c.x + c.w && cy >= c.y && cy <= c.y + c.h;
+  }
+  const fontSize = parseInt(document.getElementById('fontSize').value) || 16;
+  const lines = (c.label || '').split('\n').filter(l => l !== '');
+  const lineCount = Math.max(1, lines.length);
+  const labelBlockH = fontSize * 1.15 * lineCount + 8;
+  // The label text often renders wider than the physical box (e.g. "Ch5" over
+  // a narrow connector) — without accounting for that, clicks past the box's
+  // own right edge (most of a wide label) wouldn't register at all.
+  ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+  const labelW = lines.length ? Math.max(...lines.map(l => ctx.measureText(l).width)) + 6 : 0;
+  const hitRight = c.x + Math.max(c.w, labelW);
+  const pos = effectiveLabelPos(c);
+  const top = pos === 'below' ? c.y : c.y - labelBlockH;
+  const bottom = pos === 'below' ? c.y + c.h + labelBlockH : c.y + c.h;
+  return cx >= c.x && cx <= hitRight && cy >= top && cy <= bottom;
+}
+
+function placeLabelAt(cx, cy) {
+  if (!armedPlacement) return;
+  const placement = armedPlacement;
+  const isLegend = !!placement.isLegend;
+  const w = isLegend ? 240 : Math.max(baseMinW * 2.5, 90);
+  const h = isLegend ? 120 : Math.max(baseMinH * 2, 55);
+
+  const newComp = {
+    ch: null, col: null, row: null,
+    x: cx - w / 2, y: cy - h / 2,
+    w, h,
+    cx, cy,
+    label: placement.text,
+    autoLabel: false,
+    data: placement.data || null,
+    isLegend
+  };
+  pushUndoSnapshot();
+  detectedComponents.push(newComp);
+  const newIdx = detectedComponents.length - 1;
+
+  if (placement.queueId != null) {
+    labelQueue = labelQueue.filter(q => q.id !== placement.queueId);
+  } else if (!isLegend) {
+    nextManualId++;
+  }
+
+  setPlacementMode(false);
+  setSelected(newIdx);
+  document.getElementById('tableSection').style.display = 'block';
+  downloadBtn.disabled = false;
+  setStatus(isLegend
+    ? '<span class="ok">✓ 凡例を配置しました</span>\nドラッグで移動、右下の■マークでサイズを調整できます'
+    : '<span class="ok">✓ ラベルを配置しました</span>\nドラッグで移動、右下の■マークで枠のサイズを調整できます');
+}
+
+outputCanvas.addEventListener('mousedown', e => {
+  if (!originalImage) return;
+  const { cx, cy } = toCanvasCoords(e);
+
+  if (zoomToolActive) {
+    panDragStart = { cx, cy, offsetX: viewOffsetX, offsetY: viewOffsetY };
+    return;
+  }
+
+  if (cropMode) {
+    cropDragStart = { cx, cy };
+    cropRect = { x: cx, y: cy, w: 0, h: 0 };
+    return;
+  }
+
+  if (manualAddMode && armedPlacement) {
+    placeLabelAt(cx, cy);
+    return;
+  }
+
+  if (e.shiftKey) {
+    for (let i = detectedComponents.length - 1; i >= 0; i--) {
+      const c = detectedComponents[i];
+      if (!c.isLegend && hitTestBox(c, cx, cy)) {
+        pushUndoSnapshot();
+        c.labelPos = effectiveLabelPos(c) === 'below' ? 'above' : 'below';
+        setSelected(i);
+        setStatus('<span class="ok">✓ ラベルの位置を切り替えました</span>');
+        return;
+      }
+    }
+    return;
+  }
+
+  if (selectedIndex !== null) {
+    const sel = detectedComponents[selectedIndex];
+    if (sel && hitTestHandle(sel, cx, cy)) {
+      // The undo snapshot is pushed lazily on the first actual movement (see
+      // the mousemove handler below) — pushing it here would record a
+      // "nothing changed" snapshot for every plain click, and undoing that
+      // no-op snapshot afterward looks like undo silently failing.
+      dragInfo = { idx: selectedIndex, mode: 'resize', startCx: cx, startCy: cy, origW: sel.w, origH: sel.h, origX: sel.x, origY: sel.y, snapshotPushed: false };
+      return;
+    }
+  }
+
+  for (let i = detectedComponents.length - 1; i >= 0; i--) {
+    const c = detectedComponents[i];
+    if (hitTestBox(c, cx, cy)) {
+      setSelected(i);
+      dragInfo = { idx: i, mode: 'move', startCx: cx, startCy: cy, origX: c.x, origY: c.y, snapshotPushed: false };
+      return;
+    }
+  }
+
+  setSelected(null);
+});
+
+// Double-click one label, then double-click a different one, to swap which
+// physical spot each label points to (fixes "these two got mixed up" without
+// deleting and re-placing). Position, size AND above/below both come along,
+// so a bottom-row label swapped with a top-row one correctly becomes "above"
+// (and vice versa) instead of keeping its old side.
+outputCanvas.addEventListener('dblclick', e => {
+  if (!originalImage || manualAddMode || cropMode || zoomToolActive) return;
+  const { cx, cy } = toCanvasCoords(e);
+  let hitIdx = null;
+  for (let i = detectedComponents.length - 1; i >= 0; i--) {
+    if (hitTestBox(detectedComponents[i], cx, cy)) { hitIdx = i; break; }
+  }
+
+  if (hitIdx === null || detectedComponents[hitIdx].isLegend) {
+    clearTimeout(swapPendingTimer);
+    swapPendingIdx = null;
+    return;
+  }
+
+  if (swapPendingIdx === null) {
+    swapPendingIdx = hitIdx;
+    setSelected(hitIdx);
+    clearTimeout(swapPendingTimer);
+    swapPendingTimer = setTimeout(() => { swapPendingIdx = null; }, 6000);
+    setStatus('<span class="info">入れ替え元を選択しました。入れ替えたい別のラベルをダブルクリックしてください</span>');
+    return;
+  }
+
+  clearTimeout(swapPendingTimer);
+  if (swapPendingIdx === hitIdx) {
+    swapPendingIdx = null;
+    setStatus('<span class="info">入れ替えをキャンセルしました</span>');
+    return;
+  }
+
+  swapComponentPositions(swapPendingIdx, hitIdx);
+  swapPendingIdx = null;
+});
+
+function swapComponentPositions(idxA, idxB) {
+  pushUndoSnapshot();
+  const a = detectedComponents[idxA];
+  const b = detectedComponents[idxB];
+  const geomA = { x: a.x, y: a.y, w: a.w, h: a.h, cx: a.cx, cy: a.cy, labelPos: a.labelPos };
+  const geomB = { x: b.x, y: b.y, w: b.w, h: b.h, cx: b.cx, cy: b.cy, labelPos: b.labelPos };
+  Object.assign(a, geomB);
+  Object.assign(b, geomA);
+  selectedIndex = null;
+  drawLabels(detectedComponents);
+  renderTable(detectedComponents);
+  setStatus('<span class="ok">✓ 2つのラベルの位置を入れ替えました</span>');
+}
+
+outputCanvas.addEventListener('mousemove', e => {
+  if (dragInfo || manualAddMode || cropMode || zoomToolActive || !originalImage) return;
+  const { cx, cy } = toCanvasCoords(e);
+  let cursor = 'default';
+  if (selectedIndex !== null) {
+    const sel = detectedComponents[selectedIndex];
+    if (sel && hitTestHandle(sel, cx, cy)) cursor = 'nwse-resize';
+  }
+  if (cursor === 'default') {
+    for (let i = detectedComponents.length - 1; i >= 0; i--) {
+      if (hitTestBox(detectedComponents[i], cx, cy)) { cursor = 'move'; break; }
+    }
+  }
+  outputCanvas.style.cursor = cursor;
+});
+
+window.addEventListener('mousemove', e => {
+  if (panDragStart && originalImage) {
+    const { cx, cy } = toCanvasCoords(e);
+    viewOffsetX = panDragStart.offsetX - (cx - panDragStart.cx) / viewZoom;
+    viewOffsetY = panDragStart.offsetY - (cy - panDragStart.cy) / viewZoom;
+    clampView();
+    drawZoomPreview();
+    return;
+  }
+  if (cropDragStart && originalImage) {
+    const { cx, cy } = toCanvasCoords(e);
+    const x = Math.min(cropDragStart.cx, cx);
+    const y = Math.min(cropDragStart.cy, cy);
+    const w = Math.abs(cx - cropDragStart.cx);
+    const h = Math.abs(cy - cropDragStart.cy);
+    cropRect = { x, y, w, h };
+    drawLabels(detectedComponents);
+    drawCropOverlay();
+    return;
+  }
+  if (!dragInfo || !originalImage) return;
+  const c = detectedComponents[dragInfo.idx];
+  if (!c) { dragInfo = null; return; }
+  const { cx, cy } = toCanvasCoords(e);
+  const dx = cx - dragInfo.startCx;
+  const dy = cy - dragInfo.startCy;
+
+  if (!dragInfo.snapshotPushed && (dx !== 0 || dy !== 0)) {
+    pushUndoSnapshot();
+    dragInfo.snapshotPushed = true;
+  }
+
+  if (dragInfo.mode === 'move') {
+    c.x = dragInfo.origX + dx;
+    c.y = dragInfo.origY + dy;
+  } else if (dragInfo.mode === 'resize') {
+    c.w = Math.max(16, dragInfo.origW + dx);
+    if (!c.isLegend && effectiveLabelPos(c) === 'below') {
+      // Handle is top-right here, so the bottom edge is the anchor: growing
+      // upward increases height while keeping the bottom edge in place.
+      const newH = Math.max(16, dragInfo.origH - dy);
+      c.y = dragInfo.origY + (dragInfo.origH - newH);
+      c.h = newH;
+    } else {
+      c.h = Math.max(16, dragInfo.origH + dy);
+    }
+  }
+  c.cx = c.x + c.w / 2;
+  c.cy = c.y + c.h / 2;
+  drawLabels(detectedComponents);
+});
+
+window.addEventListener('mouseup', () => {
+  if (panDragStart) {
+    panDragStart = null;
+    return;
+  }
+  if (cropDragStart) {
+    cropDragStart = null;
+    if (cropRect && cropRect.w > 5 && cropRect.h > 5) {
+      cropActions.style.display = 'flex';
+      setStatus('<span class="info">範囲を確認して「確定」を押してください</span>');
+    } else {
+      cropRect = null;
+      drawLabels(detectedComponents);
+    }
+    return;
+  }
+  if (!dragInfo) return;
+  dragInfo = null;
+  renderTable(detectedComponents);
+});
+
+// ---------- Reset ----------
+resetBtn.addEventListener('click', () => {
+  if (!originalImage) return;
+  detectionRunId++; // invalidate any in-flight auto-detection so it can't overwrite this reset
+  detectBtn.disabled = false;
+  detectSpinner.style.visibility = 'hidden';
+  setDetectionLockUi(false);
+  detectionResumeState = null;
+  moreCandidatesBtn.style.display = 'none';
+  originalImage = pristineImage;
+  outputCanvas.width = pristineWidth;
+  outputCanvas.height = pristineHeight;
+  fitCanvasToViewport();
+  detectedComponents = [];
+  nextManualId = 1;
+  dragInfo = null;
+  clearTimeout(swapPendingTimer);
+  swapPendingIdx = null;
+  panDragStart = null;
+  setPlacementMode(false);
+  exitImageEditMode();
+  selectedIndex = null;
+  undoStack = [];
+  undoDeleteBtn.disabled = true;
+  redoStack = [];
+  redoBtn.disabled = true;
+  imageEditHistory = [];
+  imageEditUndoBtn.disabled = true;
+  hideDetectionCandidates();
+  document.getElementById('tableSection').style.display = 'none';
+  downloadBtn.disabled = true;
+  setStatus('<span class="ok">✓ リセットしました（画像も元に戻しました）</span>');
+});
+
+// ---------- Download ----------
+downloadBtn.addEventListener('click', () => {
+  const link = document.createElement('a');
+  link.download = `${originalFileName}_labeled.png`;
+  link.href = outputCanvas.toDataURL('image/png');
+  link.click();
+});
+
+// ---------- Re-render on setting change ----------
+['labelColor','fontSize','legendFontSize','legendColor','labelPosition'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    if (detectedComponents.length > 0) drawLabels(detectedComponents);
+  });
+});
+
+function setStatus(html) {
+  // Each \n-separated part becomes its own block, so lines can never visually
+  // run together regardless of wrapping/whitespace quirks.
+  statusBox.innerHTML = html
+    .split('\n')
+    .filter(line => line !== '')
+    .map(line => `<div class="status-line">${line}</div>`)
+    .join('');
+}
+
+// ---------- Item explanations (for beginners) ----------
+document.querySelectorAll('.help-btn').forEach(btn => {
+  btn.addEventListener('click', e => {
+    e.stopPropagation(); // avoid toggling an ancestor <summary> (e.g. auto-detect details) too
+    const help = document.getElementById('help-' + btn.dataset.help);
+    if (!help) return;
+    const isOpen = help.style.display === 'block';
+    document.querySelectorAll('.setting-help').forEach(h => h.style.display = 'none');
+    document.querySelectorAll('.help-btn').forEach(b => b.classList.remove('active'));
+    if (!isOpen) {
+      help.style.display = 'block';
+      btn.classList.add('active');
+    }
+  });
+});
+
+lockImageCardHeight();
+window.addEventListener('load', lockImageCardHeight);
+window.addEventListener('resize', lockImageCardHeight);
+
+/* ====================================================================
+   STEP 2 — SEM結果まとめ
+   上のChannel Labeler本体には一切手を入れず、既存のグローバル変数
+   （detectedComponents / originalImage）をそのまま読みに行くだけの
+   追加モジュール。写真上のCh番号・位置・読み込み済みデータをそのまま
+   信頼するので、ここで写真を画像認識し直す必要はない。
+==================================================================== */
+(() => {
+"use strict";
+
+/* ---------------- ログ ---------------- */
+// 右側に常にプレビューが表示されているので、画面上のステータスメッセージ欄は
+// 廃止した。ログはコンソールにのみ残す（デバッグ用）。
+function semLog(msg){
+  const t = new Date().toLocaleTimeString();
+  console.log(`[SEM ${t}] ${msg}`);
+}
+
+/* ---------------- 状態 ---------------- */
+const semState = {
+  fileEntries: [],   // {file, relPath}
+  csvRows: [],       // 任意: SEMセクション独自に読み込んだCSV（Channel Labeler側にデータが無い場合のフォールバック）
+  rows: []
+};
+
+// ラベル写真の箱の中で、電極パッドの○(析出スポット)が写る下側だけを
+// 切り出すための開始位置（箱の高さに対する割合）。実データで目視確認して調整した値。
+const PHOTO_ZOOM_START = 0.56;
+
+const semDropFolder = document.getElementById('semDropFolder');
+const semFolderInput = document.getElementById('semFolderInput');
+const semFolderStatus = document.getElementById('semFolderStatus');
+const semDropCsv = document.getElementById('semDropCsv');
+const semCsvInput = document.getElementById('semCsvInput');
+const semCsvStatus = document.getElementById('semCsvStatus');
+const semStatusBox = document.getElementById('semStatusBox');
+const semBuildBtn = document.getElementById('semBuildBtn');
+const semExportBtn = document.getElementById('semExportBtn');
+const semGridWrap = document.getElementById('semGridWrap');
+const semPhotoZoom = document.getElementById('semPhotoZoom');
+const semEnhanceScale = document.getElementById('semEnhanceScale');
+
+/* ================= ① SEM結果フォルダ ================= */
+semDropFolder.addEventListener('click', () => semFolderInput.click());
+semFolderInput.addEventListener('change', e => {
+  const list = Array.from(e.target.files || []).map(f => ({file:f, relPath:f.webkitRelativePath || f.name}));
+  ingestSemFolderFiles(list);
+});
+setupSemDropZone(semDropFolder, async (dt) => {
+  const list = await readSemDataTransferEntries(dt);
+  ingestSemFolderFiles(list);
+});
+
+function ingestSemFolderFiles(list){
+  if(!list.length) return;
+  semState.fileEntries = list;
+  const folders = new Set(list.map(e => semSubfolderKeyOf(e.relPath)));
+  semFolderStatus.textContent = `${list.length} ファイル / ${folders.size} フォルダを読み込みました`;
+  semLog(`SEMフォルダ: ${list.length}ファイル, ${folders.size}サブフォルダを検出`);
+  semBuildBtn.disabled = false;
+  refreshSemMagColumns();
+}
+
+/* ================= ② 条件CSV（任意） ================= */
+semDropCsv.addEventListener('click', () => semCsvInput.click());
+semCsvInput.addEventListener('change', e => {
+  const f = e.target.files[0];
+  if(f) loadSemCsvFile(f);
+});
+setupSemDropZone(semDropCsv, async (dt) => {
+  const list = await readSemDataTransferEntries(dt);
+  const csvFile = list.map(e=>e.file).find(f => /\.csv$/i.test(f.name));
+  if(csvFile) loadSemCsvFile(csvFile);
+});
+
+async function loadSemCsvFile(file){
+  const text = await file.text();
+  semState.csvRows = semParseCsv(text);
+  semCsvStatus.textContent = `${file.name} — ${semState.csvRows.length}行を読み込みました`;
+  semLog(`CSV読込: ${file.name} (${semState.csvRows.length}行)`);
+  refreshSemFieldList();
+}
+
+function semParseCsv(text){
+  const lines = text.split(/\r\n|\n|\r/).map(l => l.trim()).filter(l => l.length > 0);
+  if(lines.length < 2) return [];
+  const headers = lines[0].split(',').map(h => h.trim());
+  const rows = [];
+  for(let i = 1; i < lines.length; i++){
+    const cols = lines[i].split(',').map(c => c.trim());
+    const row = {};
+    headers.forEach((h, idx) => {
+      const v = cols[idx] !== undefined ? cols[idx] : '';
+      row[h] = (v !== '' && !isNaN(v)) ? Number(v) : v;
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
+/* ================= 汎用: ドロップゾーン / フォルダ走査 ================= */
+function setupSemDropZone(el, onFiles){
+  ['dragenter','dragover'].forEach(ev => el.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation(); el.classList.add('drag');
+  }));
+  ['dragleave','drop'].forEach(ev => el.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation(); el.classList.remove('drag');
+  }));
+  el.addEventListener('drop', e => {
+    if(e.dataTransfer) onFiles(e.dataTransfer);
+  });
+}
+
+async function readSemDataTransferEntries(dataTransfer){
+  const items = Array.from(dataTransfer.items || []);
+  const entries = items.map(it => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+  if(!entries.length){
+    return Array.from(dataTransfer.files || []).map(f => ({file:f, relPath:f.name}));
+  }
+  const results = [];
+  for(const entry of entries){
+    await semWalkEntry(entry, entry.name, results);
+  }
+  return results;
+}
+
+function semWalkEntry(entry, path, results){
+  return new Promise((resolve) => {
+    if(entry.isFile){
+      entry.file(file => { results.push({file, relPath: path}); resolve(); }, resolve);
+    } else if(entry.isDirectory){
+      const reader = entry.createReader();
+      const readBatch = () => {
+        reader.readEntries(async (batch) => {
+          if(!batch.length){ resolve(); return; }
+          for(const child of batch){
+            await semWalkEntry(child, path + '/' + child.name, results);
+          }
+          readBatch();
+        }, resolve);
+      };
+      readBatch();
+    } else resolve();
+  });
+}
+
+function semSubfolderKeyOf(relPath){
+  const parts = relPath.split('/');
+  return parts.length >= 3 ? parts[1] : '(root)';
+}
+
+function loadImageUrl(url){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+/* ================= フォルダ解析 ================= */
+function semClassifyType(typePart){
+  const t = typePart.toLowerCase();
+  if(/^sem$/.test(t)) return 'SEM';
+  if(/^au/.test(t)) return 'Au';
+  if(/^k-/.test(t) || /^k$/.test(t)) return 'K';
+  if(/^cl/.test(t)) return 'Cl';
+  return null;
+}
+
+function semMagNumberOf(magPart){
+  const m = magPart.match(/(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+// Directory=...\ch1\ のようなパスから ch 番号を拾う（SEMフォルダ ⇔ ch番号 の対応付け専用。
+// 写真上のどの箱がどのch番号かは Channel Labeler 側が既に確定させているので、
+// ここではあくまで「このSEMフォルダはch何番の電極のものか」だけを読み取る）。
+async function semExtractChIndex(txtFiles){
+  for(const f of txtFiles){
+    const text = await f.text();
+    const m = text.match(/[\\\/]ch(\d+)[\\\/]/i);
+    if(m) return Number(m[1]);
+  }
+  return null;
+}
+
+async function semAnalyzeFolders(fileEntries){
+  const byFolder = new Map();
+  for(const entry of fileEntries){
+    const key = semSubfolderKeyOf(entry.relPath);
+    if(!byFolder.has(key)) byFolder.set(key, []);
+    byFolder.get(key).push(entry.file);
+  }
+
+  const folders = [];
+  for(const [name, files] of byFolder){
+    const imageFiles = files.filter(f => /\.(bmp|png|jpe?g)$/i.test(f.name));
+    const txtFiles = files.filter(f => /\.txt$/i.test(f.name));
+
+    const magGroups = new Map(); // magPart -> {SEM,Au,K,Cl}
+    for(const f of imageFiles){
+      const base = f.name.replace(/\.[^.]+$/, '');
+      const parts = base.split('_');
+      let magPart, typePart;
+      if(parts.length >= 2){ typePart = parts[parts.length-1]; magPart = parts.slice(0,-1).join('_'); }
+      else { magPart = 'default'; typePart = parts[0]; }
+      const type = semClassifyType(typePart);
+      if(!type) continue;
+      if(!magGroups.has(magPart)) magGroups.set(magPart, {});
+      magGroups.get(magPart)[type] = f;
+    }
+
+    if(magGroups.size === 0) continue; // SEM系画像が無いフォルダは無視
+
+    const chIndex = await semExtractChIndex(txtFiles);
+    folders.push({name, magGroups, chIndex, txtFiles});
+  }
+  return folders;
+}
+
+// フォルダ内のSEM画像を含む倍率グループを全て（2つに限らず）、低倍率→高倍率の順で返す。
+// 列として何本表示するかは列設定パネルのチェックボックス側でコントロールする。
+function listSemEntries(magGroups){
+  const entries = Array.from(magGroups.entries()).filter(([,set]) => set.SEM);
+  return entries.sort((a,b) => {
+    const na = semMagNumberOf(a[0]), nb = semMagNumberOf(b[0]);
+    if(na != null && nb != null) return na - nb;
+    if(na != null) return -1;
+    if(nb != null) return 1;
+    return a[0].localeCompare(b[0]);
+  });
+}
+
+// 倍率グループ用の列キーを作る。数値が取れる場合は数値そのもの（sem_100等）を
+// キーにするので、同じ倍率は別フォルダ間でも同じ列にまとまる。
+function semColumnKeyFor(magKey){
+  const num = semMagNumberOf(magKey);
+  return {key: num != null ? `sem_${num}` : `sem_${magKey}`, num};
+}
+
+// Au/K/Cl は倍率設定に関わらず常に「元素マップが存在するグループのうち最も高倍率のもの」を使う
+function pickPrimaryGroup(magGroups){
+  const entries = Array.from(magGroups.entries());
+  if(!entries.length) return null;
+  const withElem = entries.filter(([,set]) => set.Au || set.K || set.Cl);
+  const pool = withElem.length ? withElem : entries;
+  const numeric = pool.filter(([k]) => semMagNumberOf(k) !== null)
+    .sort((a,b) => semMagNumberOf(a[0]) - semMagNumberOf(b[0]));
+  if(numeric.length) return numeric[numeric.length-1];
+  return pool[0];
+}
+
+// 倍率グループの .txt サイドカーから PixelSize[nm/px] と DataSize を読み取る（スケールバー校正の下読み用）
+async function findPixelInfoForGroup(txtFiles, magKey){
+  if(!txtFiles || !txtFiles.length || magKey == null) return null;
+  const numeric = semMagNumberOf(magKey);
+  let txt = txtFiles.find(f => f.name.replace(/\.[^.]+$/, '') === magKey);
+  if(!txt && numeric !== null){
+    for(const f of txtFiles){
+      const text = await f.text();
+      const m = text.match(/Magnification=(\d+)/);
+      if(m && Number(m[1]) === numeric){ txt = f; break; }
+    }
+  }
+  if(!txt) return null;
+  const text = await txt.text();
+  const ps = text.match(/PixelSize=([\d.]+)/);
+  const ds = text.match(/DataSize=(\d+)x(\d+)/);
+  if(!ps || !ds) return null;
+  return {pixelSizeNm: Number(ps[1]), width: Number(ds[1]), height: Number(ds[2])};
+}
+
+/* ---- 焼き込み済みスケールバーの自己校正 ----
+   .txtのPixelSizeは書き出しBMPの実寸とズレがあることがあるため、画像に元々
+   焼き込まれている本物のスケールバーをピクセル単位で実測し、そこから
+   「1-2-5系列のきりの良い値のうちどれを表しているか」を特定して校正する。 */
+function detectBurntBarPixelLength(img){
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const y0 = Math.floor(h*0.75), y1 = h;
+  const x0 = Math.floor(w*0.2), x1 = w;
+  const rw = x1-x0, rh = y1-y0;
+  if(rw <= 0 || rh <= 0) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = rw; canvas.height = rh;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, x0, y0, rw, rh, 0, 0, rw, rh);
+  const data = ctx.getImageData(0, 0, rw, rh).data;
+  let best = {len:0, row:0, sx:0, ex:0};
+  for(let ry=0; ry<rh; ry++){
+    let curLen=0, curStart=0, maxLen=0, maxStart=0, maxEnd=0;
+    for(let rx=0; rx<rw; rx++){
+      const idx = (ry*rw+rx)*4;
+      const bright = Math.max(data[idx],data[idx+1],data[idx+2]) > 190;
+      if(bright){
+        if(curLen===0) curStart=rx;
+        curLen++;
+        if(curLen>maxLen){ maxLen=curLen; maxStart=curStart; maxEnd=rx; }
+      } else curLen=0;
+    }
+    if(maxLen>best.len){ best = {len:maxLen, row:ry, sx:maxStart, ex:maxEnd}; }
+  }
+  const minLen = w*0.03;
+  if(best.len < minLen) return null;
+  // 検出した元バーの実際の位置（画像全体に対する割合）も返す。新しく描くバーは
+  // この位置を基準に置くことで、元のバーとの見た目のズレを無くす。
+  return {
+    barPx: best.len,
+    imgWidth: w,
+    xCenterFrac: (x0 + (best.sx + best.ex) / 2) / w,
+    yFrac: (y0 + best.row) / h,
+  };
+}
+
+function nearestNiceValue(approxUm){
+  const NICE_VALUES_UM = [1,2,5,10,20,50,100,200,500,1000,2000,5000,10000,20000,50000];
+  if(!(approxUm>0)) return null;
+  const logTarget = Math.log(approxUm);
+  let best = NICE_VALUES_UM[0], bestDiff = Infinity;
+  for(const v of NICE_VALUES_UM){
+    const diff = Math.abs(Math.log(v)-logTarget);
+    if(diff<bestDiff){ bestDiff=diff; best=v; }
+  }
+  return best;
+}
+
+function calibrateScaleBar(img, pixelInfo){
+  if(!pixelInfo || !pixelInfo.pixelSizeNm) return null;
+  const det = detectBurntBarPixelLength(img);
+  if(!det) return null;
+  const approxUm = (det.barPx * pixelInfo.pixelSizeNm) / 1000;
+  const valueUm = nearestNiceValue(approxUm);
+  return {valueUm, barPx: det.barPx, imgWidth: det.imgWidth, xCenterFrac: det.xCenterFrac, yFrac: det.yFrac};
+}
+
+function formatScaleLabel(um){
+  return um >= 1000 ? `${um/1000} mm` : `${um} μm`;
+}
+
+/* ================= Channel Labeler の状態から Ch→矩形 の対応表を作る ================= */
+// isLegend の凡例パネルや、ch番号が振られていない手動ラベルは対象外。
+// x,y,w,h は outputCanvas と同じ座標系 = originalImage の実ピクセル座標そのもの。
+function buildChRectMap(){
+  const map = new Map();
+  for(const c of detectedComponents){
+    if(c.isLegend || c.ch == null) continue;
+    if(!map.has(c.ch)) map.set(c.ch, {x:c.x, y:c.y, w:c.w, h:c.h, data: c.data || null});
+  }
+  return map;
+}
+
+function setSemStatus(html){
+  semStatusBox.innerHTML = html
+    .split('\n')
+    .filter(line => line !== '')
+    .map(line => `<div class="status-line">${line}</div>`)
+    .join('');
+}
+
+function updateSemGate(){
+  const n = buildChRectMap().size;
+  if(n > 0){
+    setSemStatus(`<span class="ok">✓ Ch番号が割り当てられた電極を ${n}個 検出しました</span>\nグリッドを生成でSEM結果と対応づけます`);
+  } else {
+    setSemStatus('① 左の写真でCh番号を1つ以上割り当ててください（自動検出 または 手動配置）');
+  }
+}
+
+/* ================= ③ 表示する列・並び順 ================= */
+// cond/photo/Au/K/Clは固定列。SEMの倍率列は「sem_100」のように実際の倍率数値を
+// キーにして、フォルダを読み込むたびに動的に追加する（2種類固定ではなく、
+// 3倍率以上あってもそれぞれ独立した列として並び替え・表示選択できるようにする）。
+const SEM_FIXED_COLUMN_LABELS = { cond: '条件', photo: 'Photo', Au: 'Au', K: 'K', Cl: 'Cl' };
+let semColumnOrder = ['cond', 'photo', 'Au', 'K', 'Cl'];
+let semColumnVisible = new Set(semColumnOrder);
+let semKnownColumns = new Map(); // "sem_100" -> {num:100, magKey:"100倍"}
+const semColumnListEl = document.getElementById('semColumnList');
+
+function columnLabelFor(key){
+  if(SEM_FIXED_COLUMN_LABELS[key]) return SEM_FIXED_COLUMN_LABELS[key];
+  const info = semKnownColumns.get(key);
+  if(!info) return key;
+  return info.num != null ? `SEM (×${info.num})` : 'SEM';
+}
+
+function renderColumnList(){
+  semColumnListEl.innerHTML = '';
+  semColumnOrder.forEach((key, idx) => {
+    const row = document.createElement('div');
+    row.className = 'sem-col-row';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = semColumnVisible.has(key);
+    cb.addEventListener('change', () => {
+      if(cb.checked) semColumnVisible.add(key); else semColumnVisible.delete(key);
+    });
+
+    const label = document.createElement('span');
+    label.className = 'sem-col-label';
+    label.textContent = columnLabelFor(key);
+
+    const btns = document.createElement('div');
+    btns.className = 'sem-col-btns';
+    const upBtn = document.createElement('button');
+    upBtn.type = 'button'; upBtn.textContent = '▲'; upBtn.disabled = idx === 0;
+    upBtn.addEventListener('click', () => moveSemColumn(idx, -1));
+    const downBtn = document.createElement('button');
+    downBtn.type = 'button'; downBtn.textContent = '▼'; downBtn.disabled = idx === semColumnOrder.length - 1;
+    downBtn.addEventListener('click', () => moveSemColumn(idx, 1));
+    btns.append(upBtn, downBtn);
+
+    row.append(cb, label, btns);
+    semColumnListEl.appendChild(row);
+  });
+}
+function moveSemColumn(idx, dir){
+  const newIdx = idx + dir;
+  if(newIdx < 0 || newIdx >= semColumnOrder.length) return;
+  [semColumnOrder[idx], semColumnOrder[newIdx]] = [semColumnOrder[newIdx], semColumnOrder[idx]];
+  renderColumnList();
+}
+renderColumnList();
+
+// 新しく見つかった倍率キーを一覧に挿入する。既に他の倍率列があればその中で
+// 倍率の昇順になる位置に、無ければ「Photo」の直後に挿入する（デフォルトの並びが
+// Photo, SEM(×100), SEM(×4000), Au, K, Cl のようになるように）。
+function insertSemColumnKey(key, num){
+  if(semColumnOrder.includes(key)) return;
+  const semIdx = semColumnOrder
+    .map((k,i) => ({k,i}))
+    .filter(o => semKnownColumns.has(o.k));
+  if(!semIdx.length){
+    const photoIdx = semColumnOrder.indexOf('photo');
+    semColumnOrder.splice(photoIdx >= 0 ? photoIdx+1 : semColumnOrder.length, 0, key);
+    return;
+  }
+  let insertAt = semIdx[semIdx.length-1].i + 1;
+  for(const {k,i} of semIdx){
+    const info = semKnownColumns.get(k);
+    if(num != null && info.num != null && num < info.num){ insertAt = i; break; }
+  }
+  semColumnOrder.splice(insertAt, 0, key);
+}
+
+// SEMフォルダから見つかった倍率一覧を取得し、まだ知らない倍率があれば列に追加する。
+// フォルダ読み込み時に一度呼べば十分なので、フィールド一覧のようなポーリングはしない。
+async function refreshSemMagColumns(){
+  if(!semState.fileEntries.length) return;
+  const folders = await semAnalyzeFolders(semState.fileEntries);
+  const found = new Map();
+  for(const f of folders){
+    for(const [magKey, set] of f.magGroups){
+      if(!set.SEM) continue;
+      const {key, num} = semColumnKeyFor(magKey);
+      if(!found.has(key)) found.set(key, {num, magKey});
+    }
+  }
+  let added = false;
+  for(const [key, info] of found){
+    if(!semKnownColumns.has(key)){
+      semKnownColumns.set(key, info);
+      semColumnVisible.add(key);
+      insertSemColumnKey(key, info.num);
+      added = true;
+    }
+  }
+  if(added) renderColumnList();
+}
+
+// 現在の列設定・行データから、実際に描画する列の並びを組み立てる。
+function getActiveColumns(){
+  const defs = {
+    cond: {kind:'cond', label:SEM_FIXED_COLUMN_LABELS.cond},
+    photo: {kind:'photo', label:SEM_FIXED_COLUMN_LABELS.photo},
+    Au: {kind:'elem', elemKey:'Au', label:'Au', hex:semColors.au},
+    K: {kind:'elem', elemKey:'K', label:'K', hex:semColors.k},
+    Cl: {kind:'elem', elemKey:'Cl', label:'Cl', hex:semColors.cl},
+  };
+  return semColumnOrder.filter(k => semColumnVisible.has(k)).map(k => {
+    if(defs[k]) return {key:k, ...defs[k]};
+    return {key:k, kind:'semMag', label: columnLabelFor(k), hex:semColors.sem};
+  });
+}
+
+/* ================= ④ 条件に表示する項目 ================= */
+let semKnownFields = new Set();
+let semFieldVisible = new Set();
+let semLastFieldsKey = '';
+const semFieldListEl = document.getElementById('semFieldList');
+
+function computeAvailableFields(){
+  const keys = new Set();
+  for(const [,comp] of buildChRectMap()){ if(comp.data) Object.keys(comp.data).forEach(k => keys.add(k)); }
+  semState.csvRows.forEach(r => Object.keys(r).forEach(k => keys.add(k)));
+  return Array.from(keys);
+}
+
+function renderFieldList(fields){
+  if(!fields.length){
+    semFieldListEl.innerHTML = '<p class="sem-field-hint">SEMフォルダ・CSV読み込み後に選べる項目が表示されます</p>';
+    return;
+  }
+  semFieldListEl.innerHTML = '';
+  fields.forEach(key => {
+    const row = document.createElement('div');
+    row.className = 'sem-field-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = semFieldVisible.has(key);
+    cb.addEventListener('change', () => {
+      if(cb.checked) semFieldVisible.add(key); else semFieldVisible.delete(key);
+    });
+    const label = document.createElement('span');
+    label.className = 'sem-field-label';
+    label.textContent = key;
+    row.append(cb, label);
+    semFieldListEl.appendChild(row);
+  });
+}
+
+// hub/portは通信設定であって実験条件ではないため、初めて見つかったときは
+// 表示チェックを外しておく（他の項目は今まで通りデフォルト表示）。
+const SEM_FIELDS_HIDDEN_BY_DEFAULT = new Set(['hub', 'port', 'CURRENT_RANGE']);
+
+function refreshSemFieldList(){
+  const fields = computeAvailableFields();
+  for(const f of fields){
+    if(!semKnownFields.has(f)){
+      semKnownFields.add(f);
+      if(!SEM_FIELDS_HIDDEN_BY_DEFAULT.has(f)) semFieldVisible.add(f);
+    }
+  }
+  const key = fields.slice().sort().join('|');
+  if(key !== semLastFieldsKey){
+    semLastFieldsKey = key;
+    renderFieldList(fields);
+  }
+}
+
+updateSemGate();
+refreshSemFieldList();
+setInterval(() => { updateSemGate(); refreshSemFieldList(); }, 1500);
+
+/* ================= ⑤ 配色・文字サイズ =================
+   条件とPhotoの背景は別々に設定できる（本体セルも常にそれぞれの見出しと同じ色）。
+   文字色は変更対象にせず固定（条件=黒／Photo=白）。条件の初期背景色は
+   Channel Labelerが電極ラベルに使うデフォルト色(#00e5a0、緑)に合わせている。 */
+const SEM_DEFAULT_COLORS = {
+  gutter: '#ffffff', sem: '#8c8c8c', au: '#ffe000', k: '#ff2020', cl: '#00b050',
+  condBg: '#00e5a0', photoBg: '#000000'
+};
+const semColors = { ...SEM_DEFAULT_COLORS };
+const SEM_COLOR_LABELS = {
+  gutter: 'ガター/画像の余白', sem: 'SEM見出し', au: 'Au見出し', k: 'K見出し', cl: 'Cl見出し',
+  condBg: '条件見出し/背景', photoBg: 'Photo見出し/背景'
+};
+const SEM_COND_TEXT = '#000000';
+const SEM_PHOTO_TEXT = '#ffffff';
+const SEM_DEFAULT_COND_FONT_SIZE = 16;
+let semCondFontSize = SEM_DEFAULT_COND_FONT_SIZE;
+const semCondFontSizeInput = document.getElementById('semCondFontSize');
+const semColorGridEl = document.getElementById('semColorGrid');
+const semColorResetBtn = document.getElementById('semColorResetBtn');
+
+function renderColorGrid(){
+  semColorGridEl.innerHTML = '';
+  Object.keys(SEM_DEFAULT_COLORS).forEach(key => {
+    const row = document.createElement('div');
+    row.className = 'sem-color-row';
+    const label = document.createElement('span');
+    label.className = 'sem-color-label';
+    label.textContent = SEM_COLOR_LABELS[key];
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.value = semColors[key];
+    input.addEventListener('input', () => {
+      semColors[key] = input.value;
+      applySemColors();
+    });
+    row.append(label, input);
+    semColorGridEl.appendChild(row);
+  });
+}
+function applySemColors(){
+  semGridWrap.style.background = semColors.gutter;
+  if(semState.rows.length) renderSemGrid(semState.rows);
+}
+semColorResetBtn.addEventListener('click', () => {
+  Object.assign(semColors, SEM_DEFAULT_COLORS);
+  semCondFontSize = SEM_DEFAULT_COND_FONT_SIZE;
+  semCondFontSizeInput.value = semCondFontSize;
+  renderColorGrid();
+  applySemColors();
+});
+semCondFontSizeInput.addEventListener('input', () => {
+  const v = parseInt(semCondFontSizeInput.value);
+  semCondFontSize = (!isNaN(v) && v > 0) ? v : SEM_DEFAULT_COND_FONT_SIZE;
+  applySemColors();
+});
+renderColorGrid();
+semGridWrap.style.background = semColors.gutter;
+
+async function loadGroupImage(entry, type){
+  if(!entry) return null;
+  const f = entry[1][type];
+  if(!f) return null;
+  const url = URL.createObjectURL(f);
+  return await loadImageUrl(url);
+}
+
+// originalImage（Channel Labelerで読み込み済みの元写真）からCh矩形を直接クロップする。
+// OCRや再検出は行わない — Channel Labelerが既に確定させた位置をそのまま信頼する。
+async function cropFromOriginal(rect, zoom){
+  if(!originalImage) return null;
+  let r = rect;
+  if(zoom){
+    const top = rect.y + rect.h * PHOTO_ZOOM_START;
+    r = {x:rect.x, y:top, w:rect.w, h:(rect.y + rect.h) - top};
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(r.w));
+  canvas.height = Math.max(1, Math.round(r.h));
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(originalImage, r.x, r.y, r.w, r.h, 0, 0, canvas.width, canvas.height);
+  const url = canvas.toDataURL('image/png');
+  return await loadImageUrl(url);
+}
+
+async function buildSemRow(folder, chRectMap){
+  const semEntries = listSemEntries(folder.magGroups);
+  const primary = pickPrimaryGroup(folder.magGroups);
+
+  const semByKey = new Map();
+  await Promise.all(semEntries.map(async entry => {
+    const [magKey] = entry;
+    const {key} = semColumnKeyFor(magKey);
+    const [img, pixelInfo] = await Promise.all([
+      loadGroupImage(entry, 'SEM'),
+      findPixelInfoForGroup(folder.txtFiles, magKey),
+    ]);
+    semByKey.set(key, {img, scale: img ? calibrateScaleBar(img, pixelInfo) : null});
+  }));
+
+  const [elemAu, elemK, elemCl] = await Promise.all([
+    loadGroupImage(primary, 'Au'),
+    loadGroupImage(primary, 'K'),
+    loadGroupImage(primary, 'Cl'),
+  ]);
+  const pixelElem = primary ? await findPixelInfoForGroup(folder.txtFiles, primary[0]) : null;
+  const elemAny = elemAu || elemK || elemCl;
+  const scaleElem = elemAny ? calibrateScaleBar(elemAny, pixelElem) : null;
+
+  const comp = folder.chIndex != null ? chRectMap.get(folder.chIndex) : null;
+
+  let data = null;
+  if(comp && comp.data) data = comp.data;
+  else if(folder.chIndex != null && semState.csvRows[folder.chIndex - 1]) data = semState.csvRows[folder.chIndex - 1];
+
+  const photo = comp ? await cropFromOriginal(comp, semPhotoZoom.checked) : null;
+
+  return {
+    name: folder.name, chIndex: folder.chIndex, data, photo,
+    semByKey,
+    elem: {Au:elemAu, K:elemK, Cl:elemCl},
+    scaleElem
+  };
+}
+
+/* ================= グリッド生成 / 表示 ================= */
+semBuildBtn.addEventListener('click', semBuild);
+semExportBtn.addEventListener('click', semExportPng);
+
+async function semBuild(){
+  if(!semState.fileEntries.length){
+    semLog('先に①SEM結果フォルダを選択してください');
+    return;
+  }
+  updateSemGate();
+  const chRectMap = buildChRectMap();
+  if(chRectMap.size === 0){
+    semLog('上の写真でCh番号が割り当てられた電極が見つかりません。「自動でチャンネルを検出」または手動配置でCh番号を割り当ててください');
+    return;
+  }
+
+  semBuildBtn.disabled = true;
+  semBuildBtn.textContent = '生成中…';
+  try{
+    const folders = await semAnalyzeFolders(semState.fileEntries);
+    semLog(`${folders.length} 件の条件フォルダを解析しました`);
+
+    const withCh = folders.filter(f => f.chIndex !== null).sort((a,b) => a.chIndex - b.chIndex);
+    const withoutCh = folders.filter(f => f.chIndex === null).sort((a,b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+
+    const rows = [];
+    for(const f of [...withCh, ...withoutCh]){
+      rows.push(await buildSemRow(f, chRectMap));
+    }
+
+    semState.rows = rows;
+    renderSemGrid(rows);
+    semExportBtn.disabled = rows.length === 0;
+    semLog(`グリッドを生成しました（${rows.length}行）`);
+  } catch(err){
+    console.error(err);
+    semLog('エラー: ' + err.message);
+  } finally {
+    semBuildBtn.disabled = false;
+    semBuildBtn.textContent = 'グリッドを生成';
+  }
+}
+
+// 行のキャプション文字列。Channel Labeler側のExcel/CSV（c.data）か、SEMセクション独自の
+// CSVのどちらかがあれば列名をそのまま key=value で並べる（列名を決め打ちしないので
+// どんなCSVスキーマでもそのまま使える）。
+function captionText(row){
+  if(row.chIndex == null && !row.data) return null;
+  const lines = [];
+  if(row.chIndex != null) lines.push(`Ch${row.chIndex}`);
+  if(row.data){
+    for(const k in row.data){
+      if(semFieldVisible.size && !semFieldVisible.has(k)) continue;
+      const v = row.data[k];
+      if(v === '' || v == null) continue;
+      lines.push(`${k}=${v}`);
+    }
+  }
+  return lines.length ? lines : null;
+}
+
+function drawContainOnCtx(ctx, img, dx, dy, dw, dh, bg){
+  ctx.fillStyle = bg || semColors.gutter;
+  ctx.fillRect(dx, dy, dw, dh);
+  if(!img) return null;
+  const s = Math.min(dw / img.naturalWidth, dh / img.naturalHeight);
+  const w = img.naturalWidth * s, h = img.naturalHeight * s;
+  const ox = dx + (dw - w) / 2, oy = dy + (dh - h) / 2;
+  ctx.drawImage(img, ox, oy, w, h);
+  return {x:ox, y:oy, w, h};
+}
+
+// 元画像に焼き込み済みの小さいスケールバーは薄くて読みにくいが、隠す必要はない
+// （下は透けて見えたままでよい）。その代わり、元のバーとは重ならない少し上の位置に、
+// ごく普通の白いバー・数値を描き直すだけでよい（縁取りや背景は付けない）。
+// 位置は固定マージンではなく、detectBurntBarPixelLengthで実測した元バーの
+// x中心・y位置（scaleInfo.xCenterFrac/yFrac）を基準にする。これにより新しいバーは
+// 常に元のバーの真上、同じ水平位置に来るので見た目のズレが出ない。
+// 並び順は「元バーのすぐ上にバー、そのさらに上に数値」。
+function drawScaleBarOnCtx(ctx, rect, scaleInfo){
+  if(!rect || !scaleInfo) return;
+  const barW = (scaleInfo.barPx / scaleInfo.imgWidth) * rect.w;
+  const label = formatScaleLabel(scaleInfo.valueUm);
+  const fontSize = Math.max(11, Math.round(rect.h * 0.062));
+  const barH = Math.max(3, rect.h * 0.016);
+
+  const xCenter = scaleInfo.xCenterFrac != null
+    ? rect.x + scaleInfo.xCenterFrac * rect.w
+    : rect.x + rect.w - rect.w * 0.045 - barW / 2;
+  const origY = scaleInfo.yFrac != null ? rect.y + scaleInfo.yFrac * rect.h : rect.y + rect.h;
+  const gap = rect.h * 0.045;
+  const barBottom = origY - gap;
+  const barTop = barBottom - barH;
+
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(xCenter - barW / 2, barTop, barW, barH);
+
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  ctx.fillText(label, xCenter, barTop - 6);
+}
+
+function buildCellCanvas(img, cssW, cssH, scaleInfo, showScale, bg){
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const rect = drawContainOnCtx(ctx, img, 0, 0, cssW, cssH, bg);
+  if(showScale && img) drawScaleBarOnCtx(ctx, rect, scaleInfo);
+  return canvas;
+}
+
+function cellImageForColumn(row, col){
+  if(col.kind === 'semMag') return row.semByKey.get(col.key)?.img || null;
+  if(col.kind === 'elem') return row.elem[col.elemKey];
+  return null;
+}
+function cellScaleForColumn(row, col){
+  if(col.kind === 'semMag') return row.semByKey.get(col.key)?.scale || null;
+  if(col.kind === 'elem') return row.scaleElem;
+  return null;
+}
+
+function renderSemGrid(rows){
+  semGridWrap.innerHTML = '';
+  if(!rows.length){
+    semGridWrap.innerHTML = '<div class="sem-emptyState">画像が見つかりませんでした</div>';
+    return;
+  }
+
+  const aspect = firstSemAspect(rows);
+  const CELL_H = 200;
+  const CELL_W = Math.round(CELL_H * aspect);
+  const PHOTO_W = Math.round(CELL_H * 0.8);
+
+  const cols = getActiveColumns();
+  const showScale = semEnhanceScale.checked;
+
+  const table = document.createElement('table');
+  table.className = 'sem-gridTable';
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+
+  for(const c of cols){
+    const th = document.createElement('th');
+    th.className = 'sem-headCell' + (c.hex ? '' : ' blank');
+    if(c.hex){ th.style.background = c.hex; th.style.color = '#111'; }
+    else if(c.kind === 'photo'){ th.style.background = semColors.photoBg; th.style.color = SEM_PHOTO_TEXT; }
+    else { th.style.background = semColors.condBg; th.style.color = SEM_COND_TEXT; }
+    th.textContent = c.label;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for(const row of rows){
+    const tr = document.createElement('tr');
+
+    for(const c of cols){
+      const td = document.createElement('td');
+      const div = document.createElement('div');
+      div.className = 'sem-cell' + (c.kind === 'cond' ? ' sem-condCell' : '');
+      // 条件列だけは中身に応じて幅が自然に決まるようにし(=最長行に自動で合わせる)、
+      // それ以外は画像セルとして固定幅にする。
+      if(c.kind !== 'cond') div.style.width = (c.kind === 'photo' ? PHOTO_W : CELL_W) + 'px';
+      div.style.height = CELL_H + 'px';
+
+      if(c.kind === 'cond'){
+        div.style.background = semColors.condBg;
+        div.style.color = SEM_COND_TEXT;
+        const cap = captionText(row);
+        div.innerHTML = cap
+          ? `<div class="sem-condText" style="font-size:${semCondFontSize}px">${cap.map(escapeHtmlSem).join('<br>')}</div>`
+          : `<div class="sem-placeholder">${escapeHtmlSem(row.name)}${row.chIndex ? ' (Ch'+row.chIndex+')' : ''}</div>`;
+      } else if(c.kind === 'photo'){
+        div.style.background = semColors.photoBg;
+        div.style.color = SEM_PHOTO_TEXT;
+        if(row.photo) div.appendChild(buildCellCanvas(row.photo, PHOTO_W, CELL_H, null, false, semColors.photoBg));
+        else div.innerHTML = `<div class="sem-placeholder">${escapeHtmlSem(row.name)}${row.chIndex ? ' (Ch'+row.chIndex+')' : ''}<br>写真なし</div>`;
+      } else {
+        const im = cellImageForColumn(row, c);
+        if(im) div.appendChild(buildCellCanvas(im, CELL_W, CELL_H, cellScaleForColumn(row, c), showScale, semColors.gutter));
+        else div.innerHTML = '<div class="sem-placeholder">no image</div>';
+      }
+      td.appendChild(div);
+      tr.appendChild(td);
+    }
+
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  semGridWrap.appendChild(table);
+}
+
+function escapeHtmlSem(s){
+  return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+// セル比率の基準にする最初に見つかったSEM画像のアスペクト比（倍率列が何本あっても
+// 最初に見つかったもので統一する）。
+function firstSemAspect(rows){
+  for(const r of rows){
+    for(const [,v] of r.semByKey){
+      if(v.img) return v.img.naturalWidth / v.img.naturalHeight;
+    }
+  }
+  return 1280/1040;
+}
+
+/* ================= PNGエクスポート ================= */
+async function semExportPng(){
+  const rows = semState.rows;
+  if(!rows.length) return;
+  const showScale = semEnhanceScale.checked;
+  const cols = getActiveColumns();
+
+  const PHOTO_W = 300, IMG_W = 420, GAP = 8, PAD = 16, HEAD_H = 60;
+  const aspect = firstSemAspect(rows);
+  const cellH = Math.round(IMG_W / aspect);
+
+  // PNGはプレビュー(CELL_H=200基準)より大きい解像度で書き出すため、条件の文字も
+  // 実際のセルの拡大率(scale)にあわせて大きくする。以前は倍率を固定値(1.33)に
+  // していたため、フォントサイズの初期値を変えると比率がズレて
+  // プレビューと書き出し画像で条件列の太さが変わって見える原因になっていた。
+  const PREVIEW_CELL_H = 200;
+  const scale = cellH / PREVIEW_CELL_H;
+
+  // 条件列の幅は、実際に表示するキャプション文字列のうち最も長い行の幅に
+  // 自動で合わせる（見切れ対策）。プレビュー(.sem-condText)と同じフォント
+  // (var(--font-mono) = Arial系)で測らないと、PNG側だけ幅がズレる
+  // （以前はここだけ"monospace"総称フォントを使っていたため、プレビューの
+  // Arialより文字が細くなり列幅が狭くなっていた）。
+  const measureCtx = document.createElement('canvas').getContext('2d');
+  measureCtx.font = `${semCondFontSize * scale}px Arial, "Helvetica Neue", sans-serif`;
+  let condW = 0;
+  if(cols.some(c => c.kind === 'cond')){
+    for(const row of rows){
+      const cap = captionText(row) || [row.name + (row.chIndex ? ` (Ch${row.chIndex})` : '')];
+      for(const line of cap){
+        const w = measureCtx.measureText(line).width;
+        if(w > condW) condW = w;
+      }
+    }
+    condW = Math.max(90 * scale, Math.ceil(condW) + 28 * scale);
+  }
+
+  const colWidths = cols.map(c => c.kind === 'cond' ? condW : c.kind === 'photo' ? PHOTO_W : IMG_W);
+  const totalW = colWidths.reduce((a,b) => a+b, 0) + GAP * Math.max(0, cols.length - 1);
+  const canvasW = PAD*2 + totalW;
+  const canvasH = PAD*2 + HEAD_H + GAP + rows.length*(cellH+GAP) - GAP;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasW; canvas.height = canvasH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = semColors.gutter;
+  ctx.fillRect(0,0,canvasW,canvasH);
+
+  ctx.font = 'bold 26px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  let x = PAD;
+  cols.forEach((c, i) => {
+    const w = colWidths[i];
+    if(c.hex){ ctx.fillStyle = c.hex; }
+    else if(c.kind === 'photo'){ ctx.fillStyle = semColors.photoBg; }
+    else { ctx.fillStyle = semColors.condBg; }
+    ctx.fillRect(x, PAD, w, HEAD_H);
+    ctx.fillStyle = c.hex ? '#111' : (c.kind === 'photo' ? SEM_PHOTO_TEXT : SEM_COND_TEXT);
+    ctx.fillText(c.label, x + w/2, PAD + HEAD_H/2 + 2);
+    x += w + GAP;
+  });
+
+  let y = PAD + HEAD_H + GAP;
+  for(const row of rows){
+    let cx = PAD;
+    cols.forEach((c, i) => {
+      const w = colWidths[i];
+      if(c.kind === 'cond'){
+        ctx.fillStyle = semColors.condBg;
+        ctx.fillRect(cx, y, w, cellH);
+        const cap = captionText(row) || [row.name + (row.chIndex ? ` (Ch${row.chIndex})` : '')];
+        ctx.fillStyle = SEM_COND_TEXT;
+        ctx.font = `${semCondFontSize * scale}px Arial, "Helvetica Neue", sans-serif`;
+        ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+        const lh = semCondFontSize * scale * 1.7;
+        cap.forEach((line, li) => ctx.fillText(line, cx + 12*scale, y + 14*scale + li*lh));
+        ctx.font = 'bold 26px sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      } else if(c.kind === 'photo'){
+        drawContainOnCtx(ctx, row.photo, cx, y, w, cellH, semColors.photoBg);
+      } else {
+        const im = cellImageForColumn(row, c);
+        const rect = drawContainOnCtx(ctx, im, cx, y, w, cellH, semColors.gutter);
+        if(showScale) drawScaleBarOnCtx(ctx, rect, cellScaleForColumn(row, c));
+      }
+      cx += w + GAP;
+    });
+
+    y += cellH + GAP;
+  }
+
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+    a.href = url;
+    a.download = `SEM_summary_${stamp}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    semLog('PNGを書き出しました');
+  }, 'image/png');
+}
+
+})();
+</script>
+</body>
+</html>
