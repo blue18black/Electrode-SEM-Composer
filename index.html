@@ -3442,6 +3442,17 @@ async function semExtractChIndex(txtFiles){
   return null;
 }
 
+// サブフォルダ名の先頭が「ch1_Eoff=0.4V」のように「ch<数字>」で始まる場合はそこから
+// ch番号を読み取る（区切り文字は _ - スペース等どれでもよい）。ch1-16, ch17-32のように
+// 撮影を分割しても、フォルダ名のch番号と Channel Labeler 側の実ch番号を完全一致でしか
+// 対応付けないので（chRectMap.get）、範囲がズレて誤対応することはない。
+// 先頭にch番号が無い旧形式のフォルダ名はそのまま（後方互換）。
+function semParseFolderName(name){
+  const m = name.match(/^ch0*(\d+)[\s_-]*(.*)$/i);
+  if(!m) return {ch: null, label: name};
+  return {ch: Number(m[1]), label: m[2] || name};
+}
+
 async function semAnalyzeFolders(fileEntries){
   const byFolder = new Map();
   for(const entry of fileEntries){
@@ -3470,8 +3481,12 @@ async function semAnalyzeFolders(fileEntries){
 
     if(magGroups.size === 0) continue; // SEM系画像が無いフォルダは無視
 
-    const chIndex = await semExtractChIndex(txtFiles);
-    folders.push({name, magGroups, chIndex, txtFiles});
+    const {ch: chFromName, label} = semParseFolderName(name);
+    const chIndex = chFromName != null ? chFromName : await semExtractChIndex(txtFiles);
+    // フォルダ名からch番号を読み取れた場合は、表示名からその接頭辞を落として
+    // 条件名部分（例: "Eoff=0.4V"）だけをキャプション表示に使う。
+    const displayName = chFromName != null ? label : name;
+    folders.push({name: displayName, magGroups, chIndex, txtFiles});
   }
   return folders;
 }
