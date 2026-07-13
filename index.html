@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Channel Labeler + SEM結果まとめ</title>
+<title>Electrode-SEM-Composer</title>
 <style>
   :root {
     --bg: #1b1f2a;
@@ -490,11 +490,13 @@
     min-width: 0;
     min-height: 0;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     padding: 32px;
-    overflow: hidden;
+    overflow: auto;
     background: var(--bg);
+    gap: 24px;
   }
 
   .canvas-wrap {
@@ -511,6 +513,56 @@
     width: auto;
     height: auto;
     cursor: crosshair;
+  }
+
+  /* ---- 複数写真パネル（Channel Labelerに複数枚読み込んだ場合） ---- */
+  #photoPanels {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+    width: 100%;
+  }
+  .photo-panel {
+    width: 100%;
+    max-width: 100%;
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    background: var(--surface);
+  }
+  .photo-panel.focused {
+    border-color: var(--accent);
+  }
+  .photo-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .photo-panel-title {
+    font-weight: 600;
+  }
+  .photo-panel-ch {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: 6px;
+  }
+  .photo-panel-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .photo-panel-canvas-host {
+    display: flex;
+    justify-content: center;
+  }
+  .photo-panel-canvas-host img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
   }
 
   .placeholder {
@@ -849,6 +901,19 @@
   .sem-hint { font-size: 11px; color: var(--text-muted); margin: 8px 0 0; line-height: 1.5; }
   .sem-status-line { font-size: 11.5px; color: var(--accent2); margin-top: 8px; min-height: 14px; word-break: break-all; }
 
+  .sem-folder-history { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+  .sem-folder-history-row {
+    display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; color: var(--text);
+  }
+  .sem-folder-history-label { flex: 1; word-break: break-all; }
+  .sem-folder-history-count { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+  .sem-folder-history-del {
+    border: none; background: transparent; color: var(--text-muted); cursor: pointer;
+    font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+  }
+  .sem-folder-history-del:hover { color: #ff6b6b; background: rgba(255,107,107,0.12); }
+
   .sem-column-list, .sem-field-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
   .sem-col-row, .sem-field-row {
     display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border);
@@ -969,7 +1034,7 @@
     <button class="btn btn-secondary" id="redoBtn" disabled title="元に戻した操作をやり直す（Ctrl+Y）" style="display:none">やり直す</button>
     <button class="btn btn-primary" id="detectBtn" disabled>
       <span id="detectSpinner" style="visibility:hidden"><span class="spinner"></span></span>
-      <span>🔍 自動でチャンネルを検出</span>
+      <span id="detectBtnLabel">🔍 自動でチャンネルを検出</span>
     </button>
     <button class="btn btn-secondary" id="resetBtn" disabled title="ラベルをすべて消して読み込んだ直後の画像に戻す">リセット</button>
     <button class="btn btn-download" id="downloadBtn" disabled title="今表示されている画像をPNGで保存（Ctrl+S）">画像を保存</button>
@@ -1172,6 +1237,7 @@
     <div class="canvas-wrap" id="canvasWrap" style="display:none">
       <canvas id="outputCanvas"></canvas>
     </div>
+    <div id="photoPanels"></div>
   </main>
 </div>
 </div>
@@ -1199,8 +1265,10 @@
         条件ごとのサブフォルダ（SEM_SEM.bmp 等を含む）が入った親フォルダをここにドラッグ<br>または <u>クリックして選択</u>
         <input type="file" id="semFolderInput" webkitdirectory multiple>
       </div>
+      <p class="sem-hint">※親フォルダが複数（ch1-6用・ch7-24用、など）に分かれている場合は、繰り返しドラッグ／選択すると追加で読み込まれます。</p>
       <p class="sem-hint">※ドラッグ&ドロップがおすすめです。「クリックして選択」だとブラウザ標準の「このフォルダへのアクセスを許可しますか」という確認が一度表示されることがあります（Chromeの仕様で、フォルダを読み込むどんなサイトでも表示される安全確認です。データが外部送信されることはありません）。</p>
       <div class="sem-status-line" id="semFolderStatus"></div>
+      <div class="sem-folder-history" id="semFolderHistory"></div>
     </div>
 
     <div class="sem-panel">
@@ -1262,6 +1330,7 @@ const fileInput = document.getElementById('fileInput');
 const excelDropZone = document.getElementById('excelDropZone');
 const excelInput = document.getElementById('excelInput');
 const detectBtn = document.getElementById('detectBtn');
+const detectBtnLabel = document.getElementById('detectBtnLabel');
 const evenBelowBtn = document.getElementById('evenBelowBtn');
 const manualAddBtn = document.getElementById('manualAddBtn');
 const placeLegendBtn = document.getElementById('placeLegendBtn');
@@ -1303,6 +1372,9 @@ let nextManualId = 1;
 let selectedIndex = null;
 let excelRows = [];
 let excelColumns = [];
+// hub/portは通信設定であって実験条件ではないため、デフォルトでは表示チェックを外しておく
+// （他の列は読み込み時点で全てチェック済みにする）。
+const FIELDS_HIDDEN_BY_DEFAULT = new Set(['hub', 'port']);
 let selectedFields = new Set(['ch']);
 let fieldAliases = {}; // excel column -> short display name used in the legend, e.g. CA_VOLT -> 'V'
 let labelQueue = [];
@@ -1340,6 +1412,342 @@ let channelStartNumber = 1; // lets a batch photo (e.g. Ch17-32) start numbering
 let detectionRunId = 0; // bumped to invalidate any in-flight auto-detection (e.g. when リセット is pressed)
 let detectionResumeState = null; // sweep state left off after the first candidate was found, so 「さらに検索」 can continue it
 
+// ---------- Multiple photos (e.g. Ch1-16 photo + Ch17-32 photo, shown side by side) ----------
+// Only one real interactive <canvas> (outputCanvas) exists. All of the module-level state
+// above (originalImage, detectedComponents, undoStack, ...) always describes whichever photo
+// currently "owns" that canvas — the "focused" photo. Switching focus snapshots the live state
+// into photos[focusedPhotoIndex], reparents outputCanvas into the target photo's panel, and
+// restores that photo's saved state into the same module-level variables. This lets every
+// existing detect/crop/drag/undo function keep working unmodified, while every photo panel
+// stays visible on screen (the non-focused ones show a static snapshot image).
+let photos = []; // per-photo snapshots; see syncActiveIntoPhotos()/applyPhotoToWorkspace()
+let focusedPhotoIndex = -1;
+let panelEls = []; // .photo-panel DOM elements, same indices as photos
+const photoPanelsEl = document.getElementById('photoPanels');
+
+function syncActiveIntoPhotos() {
+  if (focusedPhotoIndex < 0 || !photos[focusedPhotoIndex]) return;
+  const slot = photos[focusedPhotoIndex];
+  slot.image = originalImage;
+  slot.width = outputCanvas.width;
+  slot.height = outputCanvas.height;
+  slot.pristineImage = pristineImage;
+  slot.pristineWidth = pristineWidth;
+  slot.pristineHeight = pristineHeight;
+  slot.components = detectedComponents;
+  slot.nextManualId = nextManualId;
+  slot.undoStack = undoStack;
+  slot.redoStack = redoStack;
+  slot.imageEditHistory = imageEditHistory;
+  slot.fileName = originalFileName;
+  const chStartVal = parseInt(document.getElementById('chStartNumber').value);
+  if (!isNaN(chStartVal)) slot.chStart = chStartVal;
+  slot.chEnd = document.getElementById('chEndNumber').value;
+}
+
+// Restores photos[idx] into the live module-level state and moves the one real canvas
+// into that photo's panel. Mirrors the reset block that used to live inline in loadImage().
+function applyPhotoToWorkspace(idx) {
+  const slot = photos[idx];
+  focusedPhotoIndex = idx;
+
+  detectionRunId++; // invalidate any in-flight auto-detection tied to the previous photo
+  setDetectionLockUi(false);
+  detectionResumeState = null;
+  moreCandidatesBtn.style.display = 'none';
+
+  originalImage = slot.image;
+  pristineImage = slot.pristineImage;
+  pristineWidth = slot.pristineWidth;
+  pristineHeight = slot.pristineHeight;
+  originalFileName = slot.fileName;
+  outputCanvas.width = slot.width;
+  outputCanvas.height = slot.height;
+
+  const host = panelEls[idx].querySelector('.photo-panel-canvas-host');
+  host.replaceChildren(outputCanvas);
+
+  autoTuneComponentSize(slot.pristineWidth, slot.pristineHeight);
+  placeholder.style.display = 'none';
+  detectBtn.disabled = false;
+  manualAddBtn.disabled = false;
+  placeLegendBtn.disabled = false;
+  imageEditBtn.disabled = false;
+  evenBelowBtn.disabled = false;
+  resetBtn.disabled = false;
+
+  detectedComponents = slot.components;
+  nextManualId = slot.nextManualId;
+  dragInfo = null;
+  clearTimeout(swapPendingTimer);
+  swapPendingIdx = null;
+  panDragStart = null;
+  setPlacementMode(false);
+  exitImageEditMode();
+  selectedIndex = null;
+  undoStack = slot.undoStack;
+  undoDeleteBtn.disabled = undoStack.length === 0;
+  redoStack = slot.redoStack;
+  redoBtn.disabled = redoStack.length === 0;
+  imageEditHistory = slot.imageEditHistory;
+  imageEditUndoBtn.disabled = imageEditHistory.length === 0;
+  hideDetectionCandidates();
+
+  document.getElementById('chStartNumber').value = slot.chStart;
+  document.getElementById('chEndNumber').value = slot.chEnd;
+  channelStartNumber = slot.chStart;
+
+  mapExcelDataToComponents();
+  drawLabels(detectedComponents);
+  fitCanvasToViewport();
+  downloadBtn.disabled = detectedComponents.length === 0;
+
+  renderChannelTable();
+  renderPhotoPanels();
+
+  setStatus(`<span class="ok">✓ 写真${idx + 1}を編集中</span>\n${outputCanvas.width}×${outputCanvas.height}px — ${slot.fileName}`);
+}
+
+// Moves focus to photos[idx], snapshotting the photo being left as a static <img> so it
+// stays visible in its own panel (only the focused photo keeps the live, editable canvas).
+function focusPhoto(idx) {
+  if (idx === focusedPhotoIndex) return;
+  if (focusedPhotoIndex >= 0 && photos[focusedPhotoIndex]) {
+    exitImageEditMode(); // drop any crop/zoom overlay before freezing this photo as a snapshot
+    syncActiveIntoPhotos();
+    const prevPanel = panelEls[focusedPhotoIndex];
+    if (prevPanel) {
+      const snapshotUrl = outputCanvas.toDataURL('image/png');
+      const img = document.createElement('img');
+      img.src = snapshotUrl;
+      img.alt = '';
+      prevPanel.querySelector('.photo-panel-canvas-host').replaceChildren(img);
+      prevPanel.classList.remove('focused');
+    }
+  }
+  applyPhotoToWorkspace(idx);
+}
+
+// Next "開始チャンネル番号" suggested for a newly-added photo: one past the highest
+// ch number/終了チャンネル番号 seen so far across all photos (e.g. 17 after a Ch1-16 photo).
+function suggestNextChStart() {
+  let best = 0;
+  photos.forEach(p => {
+    const endNum = parseInt(p.chEnd);
+    if (!isNaN(endNum)) best = Math.max(best, endNum);
+    const chs = p.components.filter(c => c.ch != null).map(c => c.ch);
+    if (chs.length) best = Math.max(best, Math.max(...chs));
+  });
+  return best > 0 ? best + 1 : 1;
+}
+
+function createPanelEl(idx) {
+  const panel = document.createElement('div');
+  panel.className = 'photo-panel';
+  panel.dataset.idx = String(idx);
+
+  const head = document.createElement('div');
+  head.className = 'photo-panel-head';
+
+  const title = document.createElement('span');
+  title.className = 'photo-panel-title';
+  title.textContent = `写真${idx + 1}`;
+  const chSpan = document.createElement('span');
+  chSpan.className = 'photo-panel-ch';
+  title.appendChild(chSpan);
+
+  const actions = document.createElement('div');
+  actions.className = 'photo-panel-actions';
+
+  // 2枚以上まとめて読み込むのは「一気に」作業したいときなので、写真ごとの検出/手動追加
+  // ボタンは置かない — ヘッダーの共通ボタン（自動でチャンネルを検出／全ての写真を自動検出／
+  // 手動追加）が常に「今フォーカスしている写真」に効く。フォーカスの切り替えは、
+  // 枠内をクリックするだけでよい。
+  const upBtn = document.createElement('button');
+  upBtn.type = 'button';
+  upBtn.className = 'btn btn-secondary panel-move-btn';
+  upBtn.title = '1つ前に移動';
+  upBtn.textContent = '▲';
+  upBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const i = panelEls.indexOf(panel);
+    if (i >= 0) movePhoto(i, -1);
+  });
+
+  const downBtn = document.createElement('button');
+  downBtn.type = 'button';
+  downBtn.className = 'btn btn-secondary panel-move-btn';
+  downBtn.title = '1つ後ろに移動';
+  downBtn.textContent = '▼';
+  downBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const i = panelEls.indexOf(panel);
+    if (i >= 0) movePhoto(i, 1);
+  });
+
+  const delPanelBtn = document.createElement('button');
+  delPanelBtn.type = 'button';
+  delPanelBtn.className = 'btn btn-secondary panel-del-btn';
+  delPanelBtn.title = 'この写真を削除';
+  delPanelBtn.textContent = '🗑 削除';
+  delPanelBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const i = panelEls.indexOf(panel);
+    if (i < 0) return;
+    deletePhotoSlot(i);
+  });
+
+  actions.append(upBtn, downBtn, delPanelBtn);
+  head.append(title, actions);
+
+  const canvasHost = document.createElement('div');
+  canvasHost.className = 'photo-panel-canvas-host';
+
+  panel.append(head, canvasHost);
+  // 写真そのもの（画像/canvas）に限らず、枠内のどこをクリックしてもその写真にフォーカスが
+  // 移る（ボタン類は除く）。既にフォーカス中の写真なら focusPhoto() は何もしないので、
+  // ライブcanvas上での通常のラベル配置・ドラッグ操作の邪魔にはならない。
+  panel.addEventListener('click', e => {
+    if (e.target.closest('button')) return;
+    const i = panelEls.indexOf(panel);
+    if (i >= 0) focusPhoto(i);
+  });
+
+  photoPanelsEl.appendChild(panel);
+  panelEls[idx] = panel;
+}
+
+function renderPhotoPanels() {
+  photoPanelsEl.style.display = photos.length ? 'flex' : 'none';
+  detectBtnLabel.textContent = photos.length > 1 ? '🔍 全ての写真を自動検出' : '🔍 自動でチャンネルを検出';
+  detectBtn.title = photos.length > 1 ? '読み込んだ全ての写真をまとめて自動検出します' : '';
+  photos.forEach((slot, i) => {
+    const panel = panelEls[i];
+    if (!panel) return;
+    panel.dataset.idx = String(i);
+    const title = panel.querySelector('.photo-panel-title');
+    const chSpan = panel.querySelector('.photo-panel-ch');
+    if (title && title.firstChild) title.firstChild.textContent = `写真${i + 1}`;
+    const chs = slot.components.filter(c => c.ch != null).map(c => c.ch);
+    if (chSpan) {
+      chSpan.textContent = chs.length
+        ? ` (Ch${Math.min(...chs)}${Math.max(...chs) > Math.min(...chs) ? '-' + Math.max(...chs) : ''})`
+        : '';
+    }
+    panel.classList.toggle('focused', i === focusedPhotoIndex);
+    const buttons = panel.querySelectorAll('.panel-move-btn');
+    if (buttons[0]) buttons[0].disabled = i === 0; // ▲
+    if (buttons[1]) buttons[1].disabled = i === photos.length - 1; // ▼
+  });
+}
+
+// Swaps photos[idx] with its neighbor and keeps the ch numbering continuous in the new
+// order (whichever photo ends up first keeps the overall sequence's starting channel —
+// swapping which photo comes first shouldn't itself shift where the numbering begins;
+// every later photo then just continues from wherever the one before it now leaves off).
+function movePhoto(idx, dir) {
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= photos.length) return;
+  syncActiveIntoPhotos();
+  const anchorChStart = photos[0].chStart || 1;
+  [photos[idx], photos[newIdx]] = [photos[newIdx], photos[idx]];
+  [panelEls[idx], panelEls[newIdx]] = [panelEls[newIdx], panelEls[idx]];
+  panelEls.forEach(el => { if (el) photoPanelsEl.appendChild(el); }); // reorder DOM to match
+  if (focusedPhotoIndex === idx) focusedPhotoIndex = newIdx;
+  else if (focusedPhotoIndex === newIdx) focusedPhotoIndex = idx;
+  photos[0].chStart = anchorChStart;
+  renumberAllPhotos();
+  renderPhotoPanels();
+  setStatus('<span class="ok">✓ 写真の順番を入れ替えました</span>');
+}
+
+function addPhotoSlot(img, fileName) {
+  const chStart = suggestNextChStart();
+  const idx = photos.length;
+  photos.push({
+    image: img, width: img.width, height: img.height,
+    pristineImage: img, pristineWidth: img.width, pristineHeight: img.height,
+    components: [], nextManualId: 1, undoStack: [], redoStack: [], imageEditHistory: [],
+    chStart, chEnd: '', fileName
+  });
+  createPanelEl(idx);
+  focusPhoto(idx);
+}
+
+// その写真にch番号付きラベルが1つでもあれば確認してから削除する（誤操作でのラベル消失防止）。
+function deletePhotoSlot(idx) {
+  const slot = photos[idx];
+  if (!slot) return;
+  const hasLabels = slot.components.some(c => c.ch != null);
+  if (hasLabels && !window.confirm(`写真${idx + 1}にはCh番号付きのラベルがあります。削除してよろしいですか？`)) return;
+
+  const panel = panelEls[idx];
+  photos.splice(idx, 1);
+  panelEls.splice(idx, 1);
+  if (panel && panel.parentElement) panel.parentElement.removeChild(panel);
+
+  if (photos.length === 0) {
+    focusedPhotoIndex = -1;
+    resetToEmptyWorkspace();
+    return;
+  }
+
+  if (idx === focusedPhotoIndex) {
+    focusedPhotoIndex = -1; // this photo is gone — skip focusPhoto's "snapshot the old one" step
+    focusPhoto(Math.min(idx, photos.length - 1));
+  } else if (idx < focusedPhotoIndex) {
+    focusedPhotoIndex -= 1;
+  }
+  renumberAllPhotos(); // the removed photo's channels are gone, so every later photo shifts down
+  renderPhotoPanels();
+}
+
+// Restores the pre-any-photo state (only reached once the last photo is deleted).
+function resetToEmptyWorkspace() {
+  detectionRunId++;
+  setDetectionLockUi(false);
+  detectionResumeState = null;
+  moreCandidatesBtn.style.display = 'none';
+  originalImage = null;
+  pristineImage = null;
+  pristineWidth = 0;
+  pristineHeight = 0;
+  originalFileName = 'image';
+  detectedComponents = [];
+  nextManualId = 1;
+  dragInfo = null;
+  clearTimeout(swapPendingTimer);
+  swapPendingIdx = null;
+  panDragStart = null;
+  setPlacementMode(false);
+  exitImageEditMode();
+  selectedIndex = null;
+  undoStack = [];
+  undoDeleteBtn.disabled = true;
+  redoStack = [];
+  redoBtn.disabled = true;
+  imageEditHistory = [];
+  imageEditUndoBtn.disabled = true;
+  hideDetectionCandidates();
+
+  detectBtn.disabled = true;
+  manualAddBtn.disabled = true;
+  placeLegendBtn.disabled = true;
+  imageEditBtn.disabled = true;
+  evenBelowBtn.disabled = true;
+  resetBtn.disabled = true;
+  downloadBtn.disabled = true;
+
+  document.getElementById('chStartNumber').value = 1;
+  document.getElementById('chEndNumber').value = '';
+
+  canvasWrap.appendChild(outputCanvas); // park the live canvas back in its hidden default spot
+  placeholder.style.display = '';
+  renderChannelTable();
+  renderPhotoPanels();
+  setStatus('画像をアップロードしてください');
+}
+
 function setDetectionLockUi(locked) {
   document.body.classList.toggle('detecting-lock', locked);
 }
@@ -1363,47 +1771,8 @@ function loadImage(file) {
   reader.onload = ev => {
     const img = new Image();
     img.onload = () => {
-      detectionRunId++; // invalidate any in-flight auto-detection tied to the previous image
-      setDetectionLockUi(false);
-      detectionResumeState = null;
-      moreCandidatesBtn.style.display = 'none';
-      originalImage = img;
-      pristineImage = img;
-      pristineWidth = img.width;
-      pristineHeight = img.height;
-      originalFileName = file.name.replace(/\.[^/.]+$/, '') || 'image';
-      outputCanvas.width = img.width;
-      outputCanvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
-      autoTuneComponentSize(img.width, img.height);
-      placeholder.style.display = 'none';
-      canvasWrap.style.display = 'inline-block';
-      fitCanvasToViewport();
-      detectBtn.disabled = false;
-      manualAddBtn.disabled = false;
-      placeLegendBtn.disabled = false;
-      imageEditBtn.disabled = false;
-      evenBelowBtn.disabled = false;
-      resetBtn.disabled = false;
-      detectedComponents = [];
-      nextManualId = 1;
-      dragInfo = null;
-      clearTimeout(swapPendingTimer);
-      swapPendingIdx = null;
-      panDragStart = null;
-      setPlacementMode(false);
-      exitImageEditMode();
-      selectedIndex = null;
-      undoStack = [];
-      undoDeleteBtn.disabled = true;
-      redoStack = [];
-      redoBtn.disabled = true;
-      imageEditHistory = [];
-      imageEditUndoBtn.disabled = true;
-      hideDetectionCandidates();
-      document.getElementById('tableSection').style.display = 'none';
-      downloadBtn.disabled = true;
-      setStatus(`<span class="ok">✓ 読み込み完了</span>\n${img.width}×${img.height}px — ${file.name}`);
+      const fileName = file.name.replace(/\.[^/.]+$/, '') || 'image';
+      addPhotoSlot(img, fileName);
     };
     img.src = ev.target.result;
   };
@@ -1419,19 +1788,15 @@ function autoTuneComponentSize(imgW, imgH) {
   baseMinH = Math.max(15, Math.round(imgH * 0.025));
 }
 
-// Caps the canvas's on-screen size (in real pixels, not %) to whatever room
-// .canvas-area actually has, so the image only ever scales down to fit — never
-// stretched, and never clipped by an ambiguous CSS percentage/flex chain.
+// The live canvas and each photo panel's static snapshot <img> must always render at
+// identical sizes, so that switching which photo is focused only toggles the panel's
+// highlighted border — never visibly resizes the picture. CSS alone handles this
+// consistently for both (#outputCanvas / .photo-panel-canvas-host img both use
+// max-width:100%; height:auto), so this just clears any leftover pixel-based override
+// rather than computing one — a per-photo px cap would drift from the img's % sizing.
 function fitCanvasToViewport() {
-  const area = document.querySelector('.canvas-area');
-  if (!area) return;
-  const style = getComputedStyle(area);
-  const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
-  const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-  const availW = Math.max(50, area.clientWidth - padX);
-  const availH = Math.max(50, area.clientHeight - padY);
-  outputCanvas.style.maxWidth = availW + 'px';
-  outputCanvas.style.maxHeight = availH + 'px';
+  outputCanvas.style.maxWidth = '';
+  outputCanvas.style.maxHeight = '';
 }
 
 // Pin the load/edit card to the taller of its two views. This only works
@@ -1488,16 +1853,16 @@ function loadExcel(file) {
       excelRows = rows;
       excelColumns = Object.keys(rows[0]);
       selectedFields = new Set(['ch']);
+      excelColumns.forEach(col => { if (!FIELDS_HIDDEN_BY_DEFAULT.has(col)) selectedFields.add(col); });
       fieldAliases = {};
       excelColumns.forEach(col => {
         const guess = guessFieldAlias(col);
         if (guess) fieldAliases[col] = guess;
       });
       renderFieldCheckboxes();
-      mapExcelDataToComponents();
-      regenerateAutoLabels();
-      if (originalImage) drawLabels(detectedComponents);
-      if (detectedComponents.length > 0) renderTable(detectedComponents);
+      remapExcelDataAcrossAllPhotos();
+      regenerateAutoLabelsAllPhotos();
+      renderChannelTable();
 
       document.getElementById('buildQueueBtn').disabled = false;
       buildQueueFromExcel();
@@ -1522,14 +1887,13 @@ function renderFieldCheckboxes() {
     cb.checked = selectedFields.has(f.key);
     cb.addEventListener('change', () => {
       if (cb.checked) selectedFields.add(f.key); else selectedFields.delete(f.key);
-      regenerateAutoLabels();
+      regenerateAutoLabelsAllPhotos();
       labelQueue.forEach(item => {
         if (item.rowIndex != null) item.text = buildQueueLabelText(item.rowIndex, item.data);
       });
       renderQueueList();
       syncLegendDraft();
-      if (originalImage) drawLabels(detectedComponents);
-      if (detectedComponents.length > 0) renderTable(detectedComponents);
+      renderChannelTable();
     });
     const cbLabel = document.createElement('label');
     cbLabel.className = 'field-check-label';
@@ -1575,6 +1939,17 @@ function mapExcelDataToComponents() {
   });
 }
 
+// Same as mapExcelDataToComponents(), but applied to every loaded photo — not just the
+// focused one — so loading Excel/CSV after labeling multiple photos updates all of them.
+function remapExcelDataAcrossAllPhotos() {
+  if (excelRows.length === 0) return;
+  mapExcelDataToComponents(); // the focused photo (its components === detectedComponents)
+  photos.forEach((p, i) => {
+    if (i === focusedPhotoIndex) return;
+    p.components.forEach(c => { if (c.ch != null) c.data = excelRows[c.ch - 1] || null; });
+  });
+}
+
 function buildLabelText(c) {
   const parts = [];
   if (selectedFields.has('ch') && c.ch != null) parts.push(`Ch${c.ch}`);
@@ -1591,6 +1966,18 @@ function regenerateAutoLabels() {
   detectedComponents.forEach(c => {
     if (c.autoLabel) c.label = buildLabelText(c);
   });
+}
+
+// selectedFields（ラベルに表示する項目）とfieldAliasesは全写真共通の設定なので、変更した
+// ときはフォーカス中の写真だけでなく、読み込み済みの全ての写真のラベル文字を再生成する
+// （そうしないと今フォーカスしていない写真の表示だけ古いチェック状態のまま残ってしまう）。
+function regenerateAutoLabelsAllPhotos() {
+  syncActiveIntoPhotos();
+  photos.forEach(p => {
+    p.components.forEach(c => { if (c.autoLabel) c.label = buildLabelText(c); });
+  });
+  if (originalImage) drawLabels(detectedComponents);
+  refreshAllPanelSnapshots();
 }
 
 // ---------- Label queue (manual placement workflow) ----------
@@ -1818,12 +2205,7 @@ imageEditUndoBtn.addEventListener('click', () => {
   fitCanvasToViewport();
 
   drawLabels(detectedComponents);
-  if (detectedComponents.length > 0) {
-    document.getElementById('tableSection').style.display = 'block';
-    renderTable(detectedComponents);
-  } else {
-    document.getElementById('tableSection').style.display = 'none';
-  }
+  renderChannelTable();
   downloadBtn.disabled = detectedComponents.length === 0;
   setStatus('<span class="ok">✓ 画像編集を元に戻しました（切り捨てた部分を復元）</span>');
 });
@@ -1915,18 +2297,12 @@ imageEditApplyBtn.addEventListener('click', () => {
     detectedComponents = detectedComponents.filter(c =>
       c.x + c.w > 0 && c.y + c.h > 0 && c.x < W && c.y < H
     );
-    renumberChannels(detectedComponents);
-    mapExcelDataToComponents();
-    regenerateAutoLabels();
+    renumberAllPhotos();
 
     selectedIndex = null;
     activateZoomTool(); // stay in the edit card, ready for another adjustment
     drawLabels(detectedComponents);
-    if (detectedComponents.length > 0) {
-      renderTable(detectedComponents);
-    } else {
-      document.getElementById('tableSection').style.display = 'none';
-    }
+    renderChannelTable();
     setStatus('<span class="ok">✓ ズームを適用しました</span>');
   };
   newImg.src = off.toDataURL('image/png');
@@ -2008,26 +2384,27 @@ function applyCrop() {
     detectedComponents = detectedComponents
       .map(c => ({ ...c, x: c.x - cx0, y: c.y - cy0, cx: c.cx - cx0, cy: c.cy - cy0 }))
       .filter(c => c.x + c.w > 0 && c.y + c.h > 0 && c.x < cw && c.y < ch);
-    renumberChannels(detectedComponents);
-    mapExcelDataToComponents();
-    regenerateAutoLabels();
+    renumberAllPhotos();
 
     selectedIndex = null;
     fitCanvasToViewport();
     activateZoomTool(); // stay in the edit card, ready for another adjustment
     drawLabels(detectedComponents);
-    if (detectedComponents.length > 0) {
-      renderTable(detectedComponents);
-    } else {
-      document.getElementById('tableSection').style.display = 'none';
-    }
+    renderChannelTable();
     setStatus(`<span class="ok">✓ トリミングしました</span>\n${cw}×${ch}px`);
   };
   newImg.src = off.toDataURL('image/png');
 }
 
 // ---------- Detection ----------
-detectBtn.addEventListener('click', async () => {
+// With 2+ photos loaded, this single button becomes "全ての写真を自動検出" (see
+// renderPhotoPanels) and detects every photo in one click instead of running detection
+// on just whichever photo happens to be focused.
+detectBtn.addEventListener('click', () => (photos.length > 1 ? detectAllPhotos() : runAutoDetect()));
+
+// Extracted out of detectBtn's click handler so detectAllPhotos() can await it once per
+// photo (focusing each photo first) to run detection across every loaded photo from one click.
+async function runAutoDetect() {
   if (!originalImage) return;
   // Captured so this run can tell if リセット (or a new detection) invalidated
   // it while it was awaiting — see the runId checks below.
@@ -2066,13 +2443,19 @@ detectBtn.addEventListener('click', async () => {
   }
 
   // When Excel data is loaded, the goal isn't just "found something" — it's
-  // "found exactly as many as there are data rows" so every row maps to a label.
+  // "found exactly as many as there are data rows left for this photo" so every
+  // row maps to a label. With several photos sharing one spreadsheet (Ch1-16 photo
+  // + Ch17-32 photo), earlier photos have already "used up" the rows before this
+  // photo's own 開始チャンネル番号 — targeting the sheet's full row count here would
+  // make this photo search for more boxes than could ever actually be on it, and
+  // the sweep would eventually settle for its closest (garbled, wrong-count) guess.
   // An explicit end-channel number overrides this: it says exactly how many
   // labels this photo should contain, which also lets it work without Excel.
   const endChValue = parseInt(document.getElementById('chEndNumber').value);
+  const remainingRows = excelRows.length > 0 ? Math.max(0, excelRows.length - channelStartNumber + 1) : null;
   const targetCount = (!isNaN(endChValue) && endChValue >= channelStartNumber)
     ? (endChValue - channelStartNumber + 1)
-    : (excelRows.length > 0 ? excelRows.length : null);
+    : remainingRows;
 
   // Stop as soon as one matching candidate turns up rather than sweeping every
   // combination — much faster in the common case. If it turns out to be wrong,
@@ -2110,12 +2493,8 @@ detectBtn.addEventListener('click', async () => {
     return;
   }
 
-  renumberChannels(components); // applies the starting channel number chosen above
-  mapExcelDataToComponents();
-  regenerateAutoLabels();
-  drawLabels(components);
-  renderTable(components);
-  document.getElementById('tableSection').style.display = 'block';
+  renumberAllPhotos(); // applies the starting channel number and cascades into later photos (also redraws)
+  renderChannelTable();
   downloadBtn.disabled = false;
   detectBtn.disabled = false;
   detectSpinner.style.visibility = 'hidden';
@@ -2129,17 +2508,30 @@ detectBtn.addEventListener('click', async () => {
   }
 
   const detectedChCount = components.filter(c => c.ch != null).length;
-  // Compare against the range the user actually asked for this photo to cover
-  // (targetCount), not the whole spreadsheet — a 12-channel batch photo out of
-  // a 32-row file is a match, not a mismatch, once start/end are specified.
-  const expectedCount = targetCount != null ? targetCount : (excelRows.length > 0 ? excelRows.length : null);
+  // Compare against the range this photo was actually asked to cover (targetCount
+  // already accounts for rows earlier photos used up) — a 12-channel batch photo
+  // out of a 32-row file is a match, not a mismatch, once start/end are specified.
+  const expectedCount = targetCount;
   const dataMsg = expectedCount != null
     ? (expectedCount === detectedChCount
         ? `\nデータ${detectedChCount}件（Ch${channelStartNumber}〜Ch${channelStartNumber + detectedChCount - 1}）を対応付けました`
         : `\n<span class="err">⚠ 想定数(${expectedCount})と検出数(${detectedChCount})が一致しません</span>`)
     : '';
   setStatus(`<span class="ok">✓ ${components.length}個のチャンネルを検出</span>${dataMsg}`);
-});
+}
+
+// Runs 自動でチャンネルを検出 on every loaded photo in turn (focusing each one first), so
+// Ch1-16 + Ch17-32 style batches can be detected in a single click instead of having to
+// switch to each photo one at a time. renumberAllPhotos() (called inside runAutoDetect())
+// keeps each later photo's starting ch number cascading from whatever the photo before it
+// just actually detected, so nothing needs to be pre-computed here.
+async function detectAllPhotos() {
+  if (photos.length === 0) return;
+  for (let i = 0; i < photos.length; i++) {
+    focusPhoto(i);
+    await runAutoDetect();
+  }
+}
 
 // If the first candidate 自動でチャンネルを検出 committed turns out to be wrong,
 // this resumes the same sweep from where it left off and collects every other
@@ -2225,7 +2617,7 @@ async function runDetectionSweep(state, runId, stopAtFirst) {
     const a = state.attempts[state.index];
     const rawResult = detectComponents(state.imageData, a.threshold, a.minW, a.minH);
     if (rawResult.length === 0) continue;
-    const result = scaleComponents(rawResult, 1 / scale);
+    const result = filterSizeOutliers(scaleComponents(rawResult, 1 / scale));
     if (!sizeConsistencyOk(result)) continue; // wildly mismatched box sizes = not a real layout, skip
     // params は次回の自動検出の基準値(baseThreshold/baseMinW/baseMinH)にも使われるため、
     // 縮小画像基準の値のままにせず元解像度基準に戻しておく。
@@ -2251,6 +2643,26 @@ async function runDetectionSweep(state, runId, stopAtFirst) {
   }
   state.exhausted = true;
   return state;
+}
+
+// Even inside an otherwise-consistent layout, a single box that's noticeably bigger than
+// its neighbors (e.g. two adjacent electrodes whose boundary didn't separate cleanly and
+// got detected as one blob) is a false positive on its own — drop just that one box rather
+// than rejecting (or silently keeping) the whole candidate over a single outlier. Compares
+// each box against the group's median width/height rather than its min/max, so one bad box
+// can't hide by comparison to another equally-bad one, and can't be masked by many good ones.
+function filterSizeOutliers(result) {
+  if (result.length < 4) return result; // too few boxes to tell a "typical" size from an outlier
+  const median = arr => {
+    const s = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(s.length / 2);
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  };
+  const medianW = median(result.map(c => c.w));
+  const medianH = median(result.map(c => c.h));
+  const OUTLIER_RATIO = 1.35;
+  const within = (v, med) => Math.max(v, med) / Math.max(1, Math.min(v, med)) <= OUTLIER_RATIO;
+  return result.filter(c => within(c.w, medianW) && within(c.h, medianH));
 }
 
 // A real board's channels are roughly the same size; if a candidate's box sizes
@@ -2349,19 +2761,15 @@ function commitCandidate(candidate) {
   selectedIndex = null;
   hideDetectionCandidates();
 
-  renumberChannels(detectedComponents); // applies the chosen starting channel number
-  mapExcelDataToComponents();
-  regenerateAutoLabels();
-  drawLabels(detectedComponents);
-  renderTable(detectedComponents);
-  document.getElementById('tableSection').style.display = 'block';
+  renumberAllPhotos(); // applies the chosen starting channel number and cascades into later photos
+  renderChannelTable();
   downloadBtn.disabled = false;
 
   const detectedChCount = detectedComponents.filter(c => c.ch != null).length;
   const endChValue = parseInt(document.getElementById('chEndNumber').value);
   const expectedCount = (!isNaN(endChValue) && endChValue >= channelStartNumber)
     ? (endChValue - channelStartNumber + 1)
-    : (excelRows.length > 0 ? excelRows.length : null);
+    : (excelRows.length > 0 ? Math.max(0, excelRows.length - channelStartNumber + 1) : null);
   const dataMsg = expectedCount != null
     ? (expectedCount === detectedChCount
         ? `\nデータ${detectedChCount}件（Ch${channelStartNumber}〜Ch${channelStartNumber + detectedChCount - 1}）を対応付けました`
@@ -2566,7 +2974,11 @@ function drawLabels(components) {
       const lineHeight = fontSize * 1.15;
       const tw = Math.max(...lines.map(l => ctx.measureText(l).width));
       const pad = 3;
-      const lx = c.x;
+      const blockW = tw + pad * 2;
+      // Keep the label block fully inside the canvas horizontally too — a box near the
+      // right edge (e.g. a batch photo's last column) would otherwise push a wide
+      // multi-line label (Ch番号+条件値) past the image boundary and get clipped.
+      const lx = Math.max(0, Math.min(c.x, outputCanvas.width - blockW));
       const blockH = lineHeight * lines.length + pad * 2;
       let ly;
       if (effectiveLabelPos(c) === 'below') {
@@ -2576,7 +2988,7 @@ function drawLabels(components) {
       }
 
       ctx.fillStyle = selected ? '#ff3b3b' : labelColor;
-      ctx.fillRect(lx, ly, tw + pad*2, blockH);
+      ctx.fillRect(lx, ly, blockW, blockH);
 
       // Label text
       ctx.fillStyle = selected ? '#ffffff' : '#0f1117';
@@ -2646,12 +3058,38 @@ function drawResizeHandle(c, selected) {
 }
 
 // ---------- Table ----------
-function renderTable(components) {
+// Merges every photo's components into one Ch-ordered list so the sidebar table always
+// shows Ch1-32 (etc.) as a single table, regardless of which photo is currently focused.
+function buildMergedTableRows() {
+  syncActiveIntoPhotos();
+  const rows = [];
+  photos.forEach((p, photoIdx) => {
+    p.components.forEach((c, localIdx) => rows.push({ photoIdx, localIdx, c }));
+  });
+  rows.sort((a, b) => (a.c.ch ?? Infinity) - (b.c.ch ?? Infinity));
+  return rows;
+}
+
+function renderChannelTable() {
+  const rows = buildMergedTableRows();
+  document.getElementById('tableSection').style.display = rows.length ? 'block' : 'none';
+  renderTable(rows);
+}
+
+// Row actions can target a photo other than the one currently focused (e.g. editing a
+// Ch3 row while photo 2 is on screen) — bring that photo's state into the live globals
+// first so the existing per-array-index logic (pushUndoSnapshot, removeComponentAt, ...)
+// keeps working unmodified.
+function ensurePhotoFocused(photoIdx) {
+  if (photoIdx !== focusedPhotoIndex) focusPhoto(photoIdx);
+}
+
+function renderTable(rows) {
   const tbody = document.getElementById('channelTableBody');
   tbody.innerHTML = '';
-  components.forEach((c, idx) => {
+  rows.forEach(({ photoIdx, localIdx, c }) => {
     const tr = document.createElement('tr');
-    if (idx === selectedIndex) tr.classList.add('selected-row');
+    if (photoIdx === focusedPhotoIndex && localIdx === selectedIndex) tr.classList.add('selected-row');
     if (c.isLegend) tr.classList.add('legend-row');
 
     const labelTd = document.createElement('td');
@@ -2660,7 +3098,10 @@ function renderTable(components) {
     labelInput.className = 'label-input';
     labelInput.value = c.label != null ? c.label : '';
     let editSnapshotPushed = false;
-    labelInput.addEventListener('focus', () => { editSnapshotPushed = false; });
+    labelInput.addEventListener('focus', () => {
+      editSnapshotPushed = false;
+      ensurePhotoFocused(photoIdx);
+    });
     labelInput.addEventListener('input', () => {
       // Pushed on the first keystroke of this focus session, not on focus
       // itself — focusing and clicking away without typing anything shouldn't
@@ -2680,18 +3121,16 @@ function renderTable(components) {
       const posBtn = document.createElement('button');
       posBtn.className = 'pos-toggle-btn';
       posBtn.type = 'button';
-      const updatePosBtnLabel = () => {
-        const pos = effectiveLabelPos(c);
-        posBtn.textContent = pos === 'below' ? '⬇ 下' : '⬆ 上';
-        posBtn.title = 'クリックで上下を切り替え';
-      };
-      updatePosBtnLabel();
+      const pos = effectiveLabelPos(c);
+      posBtn.textContent = pos === 'below' ? '⬇ 下' : '⬆ 上';
+      posBtn.title = 'クリックで上下を切り替え';
       posBtn.addEventListener('click', e => {
         e.stopPropagation();
+        ensurePhotoFocused(photoIdx);
         pushUndoSnapshot();
         c.labelPos = effectiveLabelPos(c) === 'below' ? 'above' : 'below';
-        updatePosBtnLabel();
-        if (originalImage) drawLabels(detectedComponents);
+        drawLabels(detectedComponents);
+        renderChannelTable();
       });
       posTd.appendChild(posBtn);
     } else {
@@ -2720,14 +3159,16 @@ function renderTable(components) {
     delBtn.title = '削除';
     delBtn.addEventListener('click', e => {
       e.stopPropagation();
-      removeComponentAt(idx);
+      ensurePhotoFocused(photoIdx);
+      removeComponentAt(localIdx);
     });
     delTd.appendChild(delBtn);
 
     tr.append(labelTd, posTd, colTd, rowTd, xTd, yTd, dataTd, delTd);
     tr.addEventListener('click', e => {
       if (e.target === labelInput || e.target === delBtn) return;
-      setSelected(idx === selectedIndex ? null : idx);
+      ensurePhotoFocused(photoIdx);
+      setSelected(localIdx === selectedIndex ? null : localIdx);
     });
     tbody.appendChild(tr);
   });
@@ -2737,36 +3178,79 @@ function renderTable(components) {
 function setSelected(idx) {
   selectedIndex = idx;
   if (originalImage) drawLabels(detectedComponents);
-  renderTable(detectedComponents);
+  renderChannelTable();
 }
 
-function renumberChannels(components) {
-  let ch = channelStartNumber;
+// Returns the next unused ch number after this array, so callers that need to keep
+// numbering going across several photos (renumberAllPhotos) can chain calls together.
+function renumberChannels(components, startAt) {
+  let ch = startAt != null ? startAt : channelStartNumber;
   components.forEach(c => {
     if (c.ch !== null && c.ch !== undefined) {
       c.ch = ch;
       ch++;
     }
   });
+  return ch;
+}
+
+// Keeps ch numbering one continuous sequence across every loaded photo, in their current
+// (possibly reordered) on-screen order: photo1 starts at its own 開始チャンネル番号, and
+// every later photo's start always just continues from wherever the photo before it left
+// off. Called after anything that can change a photo's channel count or the photo order
+// (delete/detect/crop/zoom a label, delete or reorder a photo) so the numbering — and every
+// photo's on-screen label text — is always in sync, never something the user has to redo by hand.
+function renumberAllPhotos() {
+  syncActiveIntoPhotos();
+  if (photos.length === 0) return;
+  let nextCh = photos[0].chStart || 1;
+  photos.forEach((p, i) => {
+    if (i > 0) p.chStart = nextCh;
+    nextCh = renumberChannels(p.components, nextCh);
+  });
+  // Data must be re-attached by the NEW ch numbers before labels are rebuilt — otherwise a
+  // label whose ch just shifted (e.g. after deleting a stray box) would regenerate its text
+  // from the condition data it had *before* the shift, so ch and condition would visibly
+  // disagree even though c.ch itself is already correct.
+  remapExcelDataAcrossAllPhotos();
+  photos.forEach(p => {
+    p.components.forEach(c => { if (c.autoLabel) c.label = buildLabelText(c); });
+  });
+  if (focusedPhotoIndex >= 0) {
+    const slot = photos[focusedPhotoIndex];
+    channelStartNumber = slot.chStart;
+    document.getElementById('chStartNumber').value = slot.chStart;
+    drawLabels(detectedComponents);
+  }
+  refreshAllPanelSnapshots();
+  renderChannelTable();
+}
+
+// Non-focused photos are shown as a static <img> snapshot frozen at the moment focus left
+// them (see focusPhoto()) — after renumberAllPhotos() edits photos that aren't currently
+// focused, those snapshots go stale. Cycling focus through them redraws each one with the
+// existing live-canvas pipeline (no need for a separate off-screen renderer) and restores
+// whichever photo was actually focused before this ran.
+function refreshAllPanelSnapshots() {
+  const originalFocus = focusedPhotoIndex;
+  for (let i = 0; i < photos.length; i++) {
+    if (i !== originalFocus) focusPhoto(i);
+  }
+  if (originalFocus >= 0 && originalFocus !== focusedPhotoIndex) focusPhoto(originalFocus);
 }
 
 function removeComponentAt(idx) {
   pushUndoSnapshot();
   detectedComponents.splice(idx, 1);
 
-  renumberChannels(detectedComponents);
-  mapExcelDataToComponents();
-  regenerateAutoLabels();
   if (selectedIndex !== null) {
     if (selectedIndex === idx) selectedIndex = null;
     else if (selectedIndex > idx) selectedIndex--;
   }
+  renumberAllPhotos(); // cascades the shrunk count into every later photo's starting ch
   drawLabels(detectedComponents);
-  renderTable(detectedComponents);
-  if (detectedComponents.length === 0) {
-    document.getElementById('tableSection').style.display = 'none';
-    downloadBtn.disabled = true;
-  }
+  renderChannelTable();
+  if (detectedComponents.length === 0) downloadBtn.disabled = true;
   setStatus('<span class="ok">✓ ラベルを削除しました</span>\n「変更を元に戻す」で復元できます');
 }
 
@@ -2783,12 +3267,7 @@ function pushUndoSnapshot() {
 function refreshAfterHistoryJump() {
   selectedIndex = null;
   drawLabels(detectedComponents);
-  if (detectedComponents.length > 0) {
-    document.getElementById('tableSection').style.display = 'block';
-    renderTable(detectedComponents);
-  } else {
-    document.getElementById('tableSection').style.display = 'none';
-  }
+  renderChannelTable();
   downloadBtn.disabled = detectedComponents.length === 0;
 }
 
@@ -2828,7 +3307,7 @@ evenBelowBtn.addEventListener('click', () => {
   pushUndoSnapshot();
   targets.forEach(c => { c.labelPos = 'below'; });
   drawLabels(detectedComponents);
-  renderTable(detectedComponents);
+  renderChannelTable();
   setStatus(`<span class="ok">✓ 偶数chのラベル${targets.length}件を下側表示にしました</span>`);
 });
 
@@ -2969,7 +3448,6 @@ function placeLabelAt(cx, cy) {
 
   setPlacementMode(false);
   setSelected(newIdx);
-  document.getElementById('tableSection').style.display = 'block';
   downloadBtn.disabled = false;
   setStatus(isLegend
     ? '<span class="ok">✓ 凡例を配置しました</span>\nドラッグで移動、右下の■マークでサイズを調整できます'
@@ -3083,7 +3561,7 @@ function swapComponentPositions(idxA, idxB) {
   Object.assign(b, geomA);
   selectedIndex = null;
   drawLabels(detectedComponents);
-  renderTable(detectedComponents);
+  renderChannelTable();
   setStatus('<span class="ok">✓ 2つのラベルの位置を入れ替えました</span>');
 }
 
@@ -3173,7 +3651,7 @@ window.addEventListener('mouseup', () => {
   }
   if (!dragInfo) return;
   dragInfo = null;
-  renderTable(detectedComponents);
+  renderChannelTable();
 });
 
 // ---------- Reset ----------
@@ -3205,7 +3683,8 @@ resetBtn.addEventListener('click', () => {
   imageEditHistory = [];
   imageEditUndoBtn.disabled = true;
   hideDetectionCandidates();
-  document.getElementById('tableSection').style.display = 'none';
+  renderChannelTable();
+  renderPhotoPanels();
   downloadBtn.disabled = true;
   setStatus('<span class="ok">✓ リセットしました（画像も元に戻しました）</span>');
 });
@@ -3275,10 +3754,12 @@ function semLog(msg){
 
 /* ---------------- 状態 ---------------- */
 const semState = {
-  fileEntries: [],   // {file, relPath}
+  fileEntries: [],   // {file, relPath} — 全バッチ分を合わせたもの（semAnalyzeFolders等はこれを見る）
+  loadBatches: [],   // { id, label, folderCount, files: [{file,relPath}] } — ドラッグ/選択1回＝1件。履歴表示・削除用
   csvRows: [],       // 任意: SEMセクション独自に読み込んだCSV（Channel Labeler側にデータが無い場合のフォールバック）
   rows: []
 };
+let semLoadBatchIdCounter = 1;
 
 // ラベル写真の箱の中で、電極パッドの○(析出スポット)が写る下側だけを
 // 切り出すための開始位置（箱の高さに対する割合）。実データで目視確認して調整した値。
@@ -3296,6 +3777,7 @@ const semExportBtn = document.getElementById('semExportBtn');
 const semGridWrap = document.getElementById('semGridWrap');
 const semPhotoZoom = document.getElementById('semPhotoZoom');
 const semEnhanceScale = document.getElementById('semEnhanceScale');
+const semFolderHistoryEl = document.getElementById('semFolderHistory');
 
 /* ================= ① SEM結果フォルダ ================= */
 semDropFolder.addEventListener('click', () => semFolderInput.click());
@@ -3308,13 +3790,100 @@ setupSemDropZone(semDropFolder, async (dt) => {
   ingestSemFolderFiles(list);
 });
 
-function ingestSemFolderFiles(list){
+// ch1-6用・ch7-24用のように、SEM観察結果が複数の親フォルダに分かれていることもあるため、
+// ドラッグ／選択するたびに前回までの読み込み結果に追加していく（置き換えない）。
+// 各ファイルのrelPathはそれぞれ読み込んだ親フォルダ名から始まるので、フォルダ名が
+// 異なる限りサブフォルダの対応付け（semSubfolderKeyOf）が別の親フォルダ同士で衝突することはない。
+// 1回のドラッグ/選択を1件の「読み込み履歴」として憶えておき、間違えて読み込ませた分だけを
+// 後から取り消せるようにする（deleteSemLoadBatch）。
+function semRootNameOf(relPath){
+  return relPath.split('/')[0] || relPath;
+}
+
+function semRebuildFileEntriesFromBatches(){
+  semState.fileEntries = semState.loadBatches.reduce((acc, b) => acc.concat(b.files), []);
+}
+
+// 連番のch番号を「Ch1-6」のようにまとめ、飛び飛びの箇所は「, 」で区切って表示する。
+function formatChRangeLabel(chNumbers){
+  const sorted = [...new Set(chNumbers)].sort((a, b) => a - b);
+  if(!sorted.length) return null;
+  const parts = [];
+  let start = sorted[0], prev = sorted[0];
+  for(let i = 1; i <= sorted.length; i++){
+    const cur = sorted[i];
+    if(cur === prev + 1){ prev = cur; continue; }
+    parts.push(start === prev ? `Ch${start}` : `Ch${start}-${prev}`);
+    if(i < sorted.length){ start = cur; prev = cur; }
+  }
+  return parts.join(', ');
+}
+
+// この読み込み分（1バッチ）だけを対象にフォルダ解析を行い、対応付けられたch番号を集める。
+// semAnalyzeFolders はファイルリストだけで完結するので、他バッチの内容とは混ざらない。
+async function semChLabelForFiles(files){
+  const folders = await semAnalyzeFolders(files);
+  const chNumbers = folders.map(f => f.chIndex).filter(ch => ch != null);
+  return formatChRangeLabel(chNumbers);
+}
+
+async function ingestSemFolderFiles(list){
   if(!list.length) return;
-  semState.fileEntries = list;
-  const folders = new Set(list.map(e => semSubfolderKeyOf(e.relPath)));
-  semFolderStatus.textContent = `${list.length} ファイル / ${folders.size} フォルダを読み込みました`;
-  semLog(`SEMフォルダ: ${list.length}ファイル, ${folders.size}サブフォルダを検出`);
+  const rootNames = [...new Set(list.map(e => semRootNameOf(e.relPath)))];
+  const label = rootNames.length <= 2 ? rootNames.join(', ') : `${rootNames[0]} 他${rootNames.length - 1}件`;
+  const folderCount = new Set(list.map(e => semSubfolderKeyOf(e.relPath))).size;
+  const chLabel = await semChLabelForFiles(list);
+  semState.loadBatches.push({ id: semLoadBatchIdCounter++, label, folderCount, chLabel, files: list });
+  semRebuildFileEntriesFromBatches();
+
+  const totalFolders = new Set(semState.fileEntries.map(e => semSubfolderKeyOf(e.relPath))).size;
+  semFolderStatus.textContent = `${semState.fileEntries.length} ファイル / ${totalFolders} フォルダを読み込みました`;
+  semLog(`SEMフォルダ: ${list.length}ファイルを追加（合計${semState.fileEntries.length}ファイル, ${totalFolders}サブフォルダ）`);
   semBuildBtn.disabled = false;
+  renderSemFolderHistory();
+  refreshSemMagColumns();
+}
+
+function renderSemFolderHistory(){
+  semFolderHistoryEl.innerHTML = '';
+  semState.loadBatches.forEach(batch => {
+    const row = document.createElement('div');
+    row.className = 'sem-folder-history-row';
+
+    const label = document.createElement('span');
+    label.className = 'sem-folder-history-label';
+    label.textContent = batch.label;
+    label.title = batch.label;
+
+    const count = document.createElement('span');
+    count.className = 'sem-folder-history-count';
+    count.textContent = batch.chLabel ? `${batch.folderCount}フォルダ ・ ${batch.chLabel}` : `${batch.folderCount}フォルダ`;
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'sem-folder-history-del';
+    delBtn.title = 'この読み込みを取り消す';
+    delBtn.textContent = '✕';
+    delBtn.addEventListener('click', () => deleteSemLoadBatch(batch.id));
+
+    row.append(label, count, delBtn);
+    semFolderHistoryEl.appendChild(row);
+  });
+}
+
+// 間違えて読み込ませたフォルダを、読み込んだ単位ごとに後から取り消せるようにする。
+function deleteSemLoadBatch(id){
+  semState.loadBatches = semState.loadBatches.filter(b => b.id !== id);
+  semRebuildFileEntriesFromBatches();
+  const totalFolders = new Set(semState.fileEntries.map(e => semSubfolderKeyOf(e.relPath))).size;
+  if(semState.fileEntries.length === 0){
+    semFolderStatus.textContent = '';
+    semBuildBtn.disabled = true;
+  } else {
+    semFolderStatus.textContent = `${semState.fileEntries.length} ファイル / ${totalFolders} フォルダを読み込みました`;
+  }
+  semLog(`SEMフォルダの読み込みを取り消しました（残り${semState.fileEntries.length}ファイル, ${totalFolders}サブフォルダ）`);
+  renderSemFolderHistory();
   refreshSemMagColumns();
 }
 
@@ -3463,7 +4032,9 @@ async function semAnalyzeFolders(fileEntries){
 
   const folders = [];
   for(const [name, files] of byFolder){
-    const imageFiles = files.filter(f => /\.(bmp|png|jpe?g)$/i.test(f.name));
+    // "test"や"image"を含むファイル名（SEM装置が撮る確認用のナビカメラ画像等）は
+    // 倍率名として解釈できてしまい誤って取り込まれるため、対象から除外する。
+    const imageFiles = files.filter(f => /\.(bmp|png|jpe?g)$/i.test(f.name) && !/test|image/i.test(f.name.replace(/\.[^.]+$/, '')));
     const txtFiles = files.filter(f => /\.txt$/i.test(f.name));
 
     const magGroups = new Map(); // magPart -> {SEM,Au,K,Cl}
@@ -3562,8 +4133,10 @@ async function findPixelInfoForGroup(txtFiles, magKey){
 /* ---- 焼き込み済みスケールバーの自己校正 ----
    .txtのPixelSizeは書き出しBMPの実寸とズレがあることがあるため、画像に元々
    焼き込まれている本物のスケールバーをピクセル単位で実測し、そこから
-   「1-2-5系列のきりの良い値のうちどれを表しているか」を特定して校正する。 */
-function detectBurntBarPixelLength(img){
+   「1-2-5系列のきりの良い値のうちどれを表しているか」を特定して校正する。
+   preferDark: true なら黒いバー（○倍のSEM画像＝jpg）を優先、false なら白いバー
+   （Au/K/Cl元素マップ＝bmp）を優先して探す（どちらも見つからない側にはフォールバックする）。 */
+function detectBurntBarPixelLength(img, preferDark){
   const w = img.naturalWidth, h = img.naturalHeight;
   const y0 = Math.floor(h*0.75), y1 = h;
   const x0 = Math.floor(w*0.2), x1 = w;
@@ -3574,21 +4147,52 @@ function detectBurntBarPixelLength(img){
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, x0, y0, rw, rh, 0, 0, rw, rh);
   const data = ctx.getImageData(0, 0, rw, rh).data;
-  let best = {len:0, row:0, sx:0, ex:0};
-  for(let ry=0; ry<rh; ry++){
-    let curLen=0, curStart=0, maxLen=0, maxStart=0, maxEnd=0;
-    for(let rx=0; rx<rw; rx++){
-      const idx = (ry*rw+rx)*4;
-      const bright = Math.max(data[idx],data[idx+1],data[idx+2]) > 190;
-      if(bright){
-        if(curLen===0) curStart=rx;
-        curLen++;
-        if(curLen>maxLen){ maxLen=curLen; maxStart=curStart; maxEnd=rx; }
-      } else curLen=0;
+
+  // ただし「その色の帯（背景の塗りつぶし等）」を誤ってバーとして拾わないよう、
+  // 上下に何行も同じ範囲が続く太い帯は除外し、細いバーらしい行だけを対象にする。
+  const maxBarThicknessPx = Math.max(8, Math.round(rh * 0.12));
+  function longestRun(matches){
+    const rowRuns = [];
+    for(let ry=0; ry<rh; ry++){
+      let curLen=0, curStart=0, maxLen=0, maxStart=0, maxEnd=0;
+      for(let rx=0; rx<rw; rx++){
+        const idx = (ry*rw+rx)*4;
+        if(matches(data[idx], data[idx+1], data[idx+2])){
+          if(curLen===0) curStart=rx;
+          curLen++;
+          if(curLen>maxLen){ maxLen=curLen; maxStart=curStart; maxEnd=rx; }
+        } else curLen=0;
+      }
+      rowRuns.push({len:maxLen, start:maxStart, end:maxEnd});
     }
-    if(maxLen>best.len){ best = {len:maxLen, row:ry, sx:maxStart, ex:maxEnd}; }
+    let best = {len:0, row:0, sx:0, ex:0};
+    for(let ry=0; ry<rh; ry++){
+      const r = rowRuns[ry];
+      if(r.len <= best.len) continue;
+      let thickness = 1;
+      for(let dy=ry-1; dy>=0 && thickness<=maxBarThicknessPx; dy--){
+        const o = rowRuns[dy];
+        if(o.len > 0 && Math.min(o.end,r.end) - Math.max(o.start,r.start) > r.len*0.5) thickness++; else break;
+      }
+      for(let dy=ry+1; dy<rh && thickness<=maxBarThicknessPx; dy++){
+        const o = rowRuns[dy];
+        if(o.len > 0 && Math.min(o.end,r.end) - Math.max(o.start,r.start) > r.len*0.5) thickness++; else break;
+      }
+      if(thickness > maxBarThicknessPx) continue; // 太すぎる＝バーではなく塗りつぶし背景とみなして除外
+      best = {len:r.len, row:ry, sx:r.start, ex:r.end};
+    }
+    return best;
   }
+
   const minLen = w*0.03;
+  // 画像の種類によって焼き込みバーの色が決まっている（○倍のSEM画像＝白背景の情報欄に
+  // 黒いバー、Au/K/Cl元素マップ＝暗い背景に白いバー）ため、呼び出し側が種類ごとに
+  // preferDarkを指定する。まず指定された色を探し、十分な長さのものが見つからない
+  // 場合だけもう片方の色にフォールバックする。
+  const isDark = (r,g,b) => Math.max(r,g,b) < 60;
+  const isBright = (r,g,b) => Math.max(r,g,b) > 190;
+  const primary = longestRun(preferDark ? isDark : isBright);
+  const best = primary.len >= minLen ? primary : longestRun(preferDark ? isBright : isDark);
   if(best.len < minLen) return null;
   // 検出した元バーの実際の位置（画像全体に対する割合）も返す。新しく描くバーは
   // この位置を基準に置くことで、元のバーとの見た目のズレを無くす。
@@ -3612,11 +4216,16 @@ function nearestNiceValue(approxUm){
   return best;
 }
 
-function calibrateScaleBar(img, pixelInfo){
+function calibrateScaleBar(img, pixelInfo, preferDark){
   if(!pixelInfo || !pixelInfo.pixelSizeNm) return null;
-  const det = detectBurntBarPixelLength(img);
+  const det = detectBurntBarPixelLength(img, preferDark);
   if(!det) return null;
-  const approxUm = (det.barPx * pixelInfo.pixelSizeNm) / 1000;
+  // .txtのPixelSizeは元々のDataSize解像度（多くの場合は"○倍_SEM.bmp"の解像度）基準の値。
+  // "○倍"画像（jpg等）はそれと別の解像度で書き出されていることがあるため、実際に測った
+  // 画像の幅とDataSizeの幅の比率でPixelSizeを補正してからバーの実寸[μm]を求める。
+  const widthRatio = (pixelInfo.width && det.imgWidth) ? (pixelInfo.width / det.imgWidth) : 1;
+  const effectivePixelSizeNm = pixelInfo.pixelSizeNm * widthRatio;
+  const approxUm = (det.barPx * effectivePixelSizeNm) / 1000;
   const valueUm = nearestNiceValue(approxUm);
   return {valueUm, barPx: det.barPx, imgWidth: det.imgWidth, xCenterFrac: det.xCenterFrac, yFrac: det.yFrac};
 }
@@ -3627,12 +4236,18 @@ function formatScaleLabel(um){
 
 /* ================= Channel Labeler の状態から Ch→矩形 の対応表を作る ================= */
 // isLegend の凡例パネルや、ch番号が振られていない手動ラベルは対象外。
-// x,y,w,h は outputCanvas と同じ座標系 = originalImage の実ピクセル座標そのもの。
+// x,y,w,h はそれぞれの写真のoutputCanvasと同じ座標系 = その写真のoriginalImageの実ピクセル座標
+// そのもの。写真を複数枚読み込んでいる場合はここで全写真分を走査するので、ch1-16は写真1、
+// ch17-32は写真2、のように分かれていてもch番号が一致するものだけが対応付く。image（その電極
+// が写っている元の写真）も持たせて、SEM composer側が正しい写真からクロップできるようにする。
 function buildChRectMap(){
+  syncActiveIntoPhotos();
   const map = new Map();
-  for(const c of detectedComponents){
-    if(c.isLegend || c.ch == null) continue;
-    if(!map.has(c.ch)) map.set(c.ch, {x:c.x, y:c.y, w:c.w, h:c.h, data: c.data || null});
+  for(const photo of photos){
+    for(const c of photo.components){
+      if(c.isLegend || c.ch == null) continue;
+      if(!map.has(c.ch)) map.set(c.ch, {x:c.x, y:c.y, w:c.w, h:c.h, data: c.data || null, image: photo.image});
+    }
   }
   return map;
 }
@@ -3658,7 +4273,7 @@ function updateSemGate(){
 // cond/photo/Au/K/Clは固定列。SEMの倍率列は「sem_100」のように実際の倍率数値を
 // キーにして、フォルダを読み込むたびに動的に追加する（2種類固定ではなく、
 // 3倍率以上あってもそれぞれ独立した列として並び替え・表示選択できるようにする）。
-const SEM_FIXED_COLUMN_LABELS = { cond: '条件', photo: 'Photo', Au: 'Au', K: 'K', Cl: 'Cl' };
+const SEM_FIXED_COLUMN_LABELS = { cond: 'Conditions', photo: 'Photo', Au: 'Au', K: 'K', Cl: 'Cl' };
 let semColumnOrder = ['cond', 'photo', 'Au', 'K', 'Cl'];
 let semColumnVisible = new Set(semColumnOrder);
 let semKnownColumns = new Map(); // "sem_100" -> {num:100, magKey:"100倍"}
@@ -3732,10 +4347,11 @@ function insertSemColumnKey(key, num){
 }
 
 // SEMフォルダから見つかった倍率一覧を取得し、まだ知らない倍率があれば列に追加する。
-// フォルダ読み込み時に一度呼べば十分なので、フィールド一覧のようなポーリングはしない。
+// フォルダ読み込み時（追加時・削除時どちらも）に呼ぶので、もうどのフォルダにも
+// 存在しなくなった倍率列（読み込み履歴からフォルダを削除した結果など）はここで
+// 取り除く — そうしないと中身が「no image」だけの空の列が残り続けてしまう。
 async function refreshSemMagColumns(){
-  if(!semState.fileEntries.length) return;
-  const folders = await semAnalyzeFolders(semState.fileEntries);
+  const folders = semState.fileEntries.length ? await semAnalyzeFolders(semState.fileEntries) : [];
   const found = new Map();
   for(const f of folders){
     for(const [magKey, set] of f.magGroups){
@@ -3744,16 +4360,24 @@ async function refreshSemMagColumns(){
       if(!found.has(key)) found.set(key, {num, magKey});
     }
   }
-  let added = false;
+  let changed = false;
   for(const [key, info] of found){
     if(!semKnownColumns.has(key)){
       semKnownColumns.set(key, info);
       semColumnVisible.add(key);
       insertSemColumnKey(key, info.num);
-      added = true;
+      changed = true;
     }
   }
-  if(added) renderColumnList();
+  for(const key of [...semKnownColumns.keys()]){
+    if(found.has(key)) continue;
+    semKnownColumns.delete(key);
+    semColumnVisible.delete(key);
+    const idx = semColumnOrder.indexOf(key);
+    if(idx >= 0) semColumnOrder.splice(idx, 1);
+    changed = true;
+  }
+  if(changed) renderColumnList();
 }
 
 // 現在の列設定・行データから、実際に描画する列の並びを組み立てる。
@@ -3828,7 +4452,7 @@ function refreshSemFieldList(){
 
 updateSemGate();
 refreshSemFieldList();
-setInterval(() => { updateSemGate(); refreshSemFieldList(); }, 1500);
+setInterval(() => { updateSemGate(); refreshSemFieldList(); renderPhotoPanels(); }, 1500);
 
 /* ================= ⑤ 配色・文字サイズ =================
    条件とPhotoの背景は別々に設定できる（本体セルも常にそれぞれの見出しと同じ色）。
@@ -3897,10 +4521,10 @@ async function loadGroupImage(entry, type){
   return await loadImageUrl(url);
 }
 
-// originalImage（Channel Labelerで読み込み済みの元写真）からCh矩形を直接クロップする。
-// OCRや再検出は行わない — Channel Labelerが既に確定させた位置をそのまま信頼する。
+// rect.image（Channel Labelerで読み込み済みの、その電極が写っている元の写真）からCh矩形を
+// 直接クロップする。OCRや再検出は行わない — Channel Labelerが既に確定させた位置をそのまま信頼する。
 async function cropFromOriginal(rect, zoom){
-  if(!originalImage) return null;
+  if(!rect.image) return null;
   let r = rect;
   if(zoom){
     const top = rect.y + rect.h * PHOTO_ZOOM_START;
@@ -3910,7 +4534,7 @@ async function cropFromOriginal(rect, zoom){
   canvas.width = Math.max(1, Math.round(r.w));
   canvas.height = Math.max(1, Math.round(r.h));
   const ctx = canvas.getContext('2d');
-  ctx.drawImage(originalImage, r.x, r.y, r.w, r.h, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(rect.image, r.x, r.y, r.w, r.h, 0, 0, canvas.width, canvas.height);
   const url = canvas.toDataURL('image/png');
   return await loadImageUrl(url);
 }
@@ -3927,7 +4551,8 @@ async function buildSemRow(folder, chRectMap){
       loadGroupImage(entry, 'SEM'),
       findPixelInfoForGroup(folder.txtFiles, magKey),
     ]);
-    semByKey.set(key, {img, scale: img ? calibrateScaleBar(img, pixelInfo) : null});
+    // ○倍のSEM画像（jpg）は白背景の情報欄に黒いバーが焼き込まれているので、黒を優先して探す。
+    semByKey.set(key, {img, scale: img ? calibrateScaleBar(img, pixelInfo, true) : null});
   }));
 
   const [elemAu, elemK, elemCl] = await Promise.all([
@@ -3937,7 +4562,8 @@ async function buildSemRow(folder, chRectMap){
   ]);
   const pixelElem = primary ? await findPixelInfoForGroup(folder.txtFiles, primary[0]) : null;
   const elemAny = elemAu || elemK || elemCl;
-  const scaleElem = elemAny ? calibrateScaleBar(elemAny, pixelElem) : null;
+  // Au/K/Cl元素マップ（bmp）は暗い背景に白いバーが焼き込まれているので、白を優先して探す。
+  const scaleElem = elemAny ? calibrateScaleBar(elemAny, pixelElem, false) : null;
 
   const comp = folder.chIndex != null ? chRectMap.get(folder.chIndex) : null;
 
