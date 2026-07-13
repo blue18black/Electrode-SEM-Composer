@@ -3467,17 +3467,33 @@ async function semAnalyzeFolders(fileEntries){
     const txtFiles = files.filter(f => /\.txt$/i.test(f.name));
 
     const magGroups = new Map(); // magPart -> {SEM,Au,K,Cl}
+    const plainMagFiles = []; // "100倍.jpg" のように種別サフィックスの無い倍率のみの画像（拡張子はbmp/jpg等どれでもよい）
     for(const f of imageFiles){
       const base = f.name.replace(/\.[^.]+$/, '');
       const parts = base.split('_');
-      let magPart, typePart;
-      if(parts.length >= 2){ typePart = parts[parts.length-1]; magPart = parts.slice(0,-1).join('_'); }
-      else { magPart = 'default'; typePart = parts[0]; }
-      const type = semClassifyType(typePart);
-      if(!type) continue;
-      if(!magGroups.has(magPart)) magGroups.set(magPart, {});
-      magGroups.get(magPart)[type] = f;
+      if(parts.length >= 2){
+        const typePart = parts[parts.length-1];
+        const magPart = parts.slice(0,-1).join('_');
+        const type = semClassifyType(typePart);
+        if(!type) continue;
+        if(!magGroups.has(magPart)) magGroups.set(magPart, {});
+        magGroups.get(magPart)[type] = f;
+      } else {
+        const type = semClassifyType(base);
+        if(type){
+          if(!magGroups.has('default')) magGroups.set('default', {});
+          magGroups.get('default')[type] = f;
+        } else {
+          plainMagFiles.push({magPart: base, file: f});
+        }
+      }
     }
+    // 種別サフィックスの無い「○倍」画像（.jpg）があれば、同倍率の「○倍_SEM」（.bmp）より
+    // 優先してSEM画像として使う（拡張子ではなく倍率部分のファイル名だけで対応付けている）
+    plainMagFiles.forEach(({magPart, file}) => {
+      if(!magGroups.has(magPart)) magGroups.set(magPart, {});
+      magGroups.get(magPart).SEM = file;
+    });
 
     if(magGroups.size === 0) continue; // SEM系画像が無いフォルダは無視
 
