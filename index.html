@@ -1037,7 +1037,7 @@
       <span id="detectBtnLabel">🔍 自動でチャンネルを検出</span>
     </button>
     <button class="btn btn-secondary" id="resetBtn" disabled title="ラベルをすべて消して読み込んだ直後の画像に戻す">リセット</button>
-    <button class="btn btn-download" id="downloadBtn" disabled title="今表示されている画像をPNGで保存（Ctrl+S）">画像を保存</button>
+    <button class="btn btn-download" id="downloadBtn" disabled title="今表示されている画像をPNGで保存（Ctrl+S）"><span id="downloadBtnLabel">画像を保存</span></button>
   </div>
 </header>
 
@@ -1324,6 +1324,9 @@
 </section>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- ブラウザは.tif/.tiffを標準では表示できないため、SEM装置が出力する倍率画像（.tif）を
+     デコードしてcanvasに描くために使う（UTIF.decode/decodeImage/toRGBA8）。 -->
+<script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
 <script>
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
@@ -1351,6 +1354,7 @@ const undoDeleteBtn = document.getElementById('undoDeleteBtn');
 const redoBtn = document.getElementById('redoBtn');
 const resetBtn = document.getElementById('resetBtn');
 const downloadBtn = document.getElementById('downloadBtn');
+const downloadBtnLabel = document.getElementById('downloadBtnLabel');
 const statusBox = document.getElementById('statusBox');
 const outputCanvas = document.getElementById('outputCanvas');
 const ctx = outputCanvas.getContext('2d');
@@ -1618,9 +1622,18 @@ function createPanelEl(idx) {
 }
 
 function renderPhotoPanels() {
+  syncActiveIntoPhotos();
   photoPanelsEl.style.display = photos.length ? 'flex' : 'none';
   detectBtnLabel.textContent = photos.length > 1 ? '🔍 全ての写真を自動検出' : '🔍 自動でチャンネルを検出';
   detectBtn.title = photos.length > 1 ? '読み込んだ全ての写真をまとめて自動検出します' : '';
+  downloadBtnLabel.textContent = photos.length > 1 ? '画像を保存（全ての写真）' : '画像を保存';
+  downloadBtn.title = photos.length > 1
+    ? '読み込んだ全ての写真をまとめてPNGで保存します（Ctrl+S）'
+    : '今表示されている画像をPNGで保存（Ctrl+S）';
+  // ラベルが1つも付いていない写真がフォーカス中でも、他の写真に保存できる内容が
+  // あるなら保存ボタンは有効にしておく（フォーカス中の写真だけを見て判定しない）。
+  const anyHasComponents = detectedComponents.length > 0 || photos.some(p => p.components.length > 0);
+  downloadBtn.disabled = !anyHasComponents;
   photos.forEach((slot, i) => {
     const panel = panelEls[i];
     if (!panel) return;
@@ -3690,12 +3703,29 @@ resetBtn.addEventListener('click', () => {
 });
 
 // ---------- Download ----------
+// 2枚以上読み込んでいるときは、今表示中の1枚だけでなく全ての写真を一度に保存する
+// （detectBtnが「全ての写真を自動検出」に切り替わるのと同じ考え方）。
 downloadBtn.addEventListener('click', () => {
+  if (photos.length > 1) downloadAllPhotos(); else downloadCurrentPhoto();
+});
+
+function downloadCurrentPhoto(){
   const link = document.createElement('a');
   link.download = `${originalFileName}_labeled.png`;
   link.href = outputCanvas.toDataURL('image/png');
   link.click();
-});
+}
+
+async function downloadAllPhotos(){
+  const originalFocus = focusedPhotoIndex;
+  for (let i = 0; i < photos.length; i++) {
+    focusPhoto(i); // reparents the live canvas into photo i's panel and redraws it
+    downloadCurrentPhoto();
+    // ブラウザが「連続ダウンロード」の許可を求めたり取りこぼしたりしないよう、1件ずつ間隔を空ける。
+    await new Promise(r => setTimeout(r, 300));
+  }
+  if (originalFocus >= 0 && originalFocus !== focusedPhotoIndex) focusPhoto(originalFocus);
+}
 
 // ---------- Re-render on setting change ----------
 ['labelColor','fontSize','legendFontSize','legendColor','labelPosition'].forEach(id => {
@@ -3984,6 +4014,39 @@ function loadImageUrl(url){
   });
 }
 
+// ブラウザは.tif/.tiffを<img>で直接表示できないため、UTIF.js（CDNから読み込み済み）で
+// ピクセルデータにデコードしてcanvasへ描き、そのcanvasをPNGとして書き出してから
+// 通常のImageとして読み込み直す。こうすることで、戻り値は他の形式（jpg/png/bmp）を
+// 読み込んだ場合と全く同じ普通のHTMLImageElement（naturalWidth等も使える）になり、
+// 以降のスケールバー検出やグリッド描画のコードを一切変更せずに済む。
+async function loadTiffAsImage(file){
+  const buf = await file.arrayBuffer();
+  const ifds = UTIF.decode(buf);
+  if(!ifds.length) throw new Error('TIFFの解析に失敗しました: ' + file.name);
+  const page = ifds[0];
+  UTIF.decodeImage(buf, page, ifds);
+  const rgba = UTIF.toRGBA8(page);
+  const canvas = document.createElement('canvas');
+  canvas.width = page.width;
+  canvas.height = page.height;
+  const cctx = canvas.getContext('2d');
+  const imageData = cctx.createImageData(page.width, page.height);
+  imageData.data.set(rgba);
+  cctx.putImageData(imageData, 0, 0);
+  return await loadImageUrl(canvas.toDataURL('image/png'));
+}
+
+// File種別を見て、.tif/.tiffならUTIF.js経由、それ以外はブラウザ標準の<img>読み込みに振り分ける。
+async function loadImageFile(file){
+  if(/\.tiff?$/i.test(file.name)) return await loadTiffAsImage(file);
+  const url = URL.createObjectURL(file);
+  try {
+    return await loadImageUrl(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /* ================= フォルダ解析 ================= */
 function semClassifyType(typePart){
   const t = typePart.toLowerCase();
@@ -4034,7 +4097,7 @@ async function semAnalyzeFolders(fileEntries){
   for(const [name, files] of byFolder){
     // "test"や"image"を含むファイル名（SEM装置が撮る確認用のナビカメラ画像等）は
     // 倍率名として解釈できてしまい誤って取り込まれるため、対象から除外する。
-    const imageFiles = files.filter(f => /\.(bmp|png|jpe?g)$/i.test(f.name) && !/test|image/i.test(f.name.replace(/\.[^.]+$/, '')));
+    const imageFiles = files.filter(f => /\.(bmp|png|jpe?g|tiff?)$/i.test(f.name) && !/test|image/i.test(f.name.replace(/\.[^.]+$/, '')));
     const txtFiles = files.filter(f => /\.txt$/i.test(f.name));
 
     const magGroups = new Map(); // magPart -> {SEM,Au,K,Cl}
@@ -4060,10 +4123,20 @@ async function semAnalyzeFolders(fileEntries){
       }
     }
     // 種別サフィックスの無い「○倍」画像（.jpg）があれば、同倍率の「○倍_SEM」（.bmp）より
-    // 優先してSEM画像として使う（拡張子ではなく倍率部分のファイル名だけで対応付けている）
+    // 優先してSEM画像として使う。マッチさせるキーは文字列そのものではなく倍率の「数値」で
+    // 判定する — 「4000倍」と「4000倍_SEM」の倍率部分が全角/半角スペースの有無など文字列
+    // レベルでわずかに違うと、数値としては同じ倍率なのに別キーとして扱われてしまい、
+    // 同じ倍率の列に2つの画像が競合して残る（どちらが採用されるか不定になる）ことがあるため。
     plainMagFiles.forEach(({magPart, file}) => {
-      if(!magGroups.has(magPart)) magGroups.set(magPart, {});
-      magGroups.get(magPart).SEM = file;
+      const num = semMagNumberOf(magPart);
+      let targetKey = magPart;
+      if(num != null){
+        for(const existingKey of magGroups.keys()){
+          if(existingKey !== magPart && semMagNumberOf(existingKey) === num){ targetKey = existingKey; break; }
+        }
+      }
+      if(!magGroups.has(targetKey)) magGroups.set(targetKey, {});
+      magGroups.get(targetKey).SEM = file;
     });
 
     if(magGroups.size === 0) continue; // SEM系画像が無いフォルダは無視
@@ -4517,8 +4590,7 @@ async function loadGroupImage(entry, type){
   if(!entry) return null;
   const f = entry[1][type];
   if(!f) return null;
-  const url = URL.createObjectURL(f);
-  return await loadImageUrl(url);
+  return await loadImageFile(f);
 }
 
 // rect.image（Channel Labelerで読み込み済みの、その電極が写っている元の写真）からCh矩形を
@@ -4545,14 +4617,18 @@ async function buildSemRow(folder, chRectMap){
 
   const semByKey = new Map();
   await Promise.all(semEntries.map(async entry => {
-    const [magKey] = entry;
+    const [magKey, set] = entry;
     const {key} = semColumnKeyFor(magKey);
     const [img, pixelInfo] = await Promise.all([
       loadGroupImage(entry, 'SEM'),
       findPixelInfoForGroup(folder.txtFiles, magKey),
     ]);
-    // ○倍のSEM画像（jpg）は白背景の情報欄に黒いバーが焼き込まれているので、黒を優先して探す。
-    semByKey.set(key, {img, scale: img ? calibrateScaleBar(img, pixelInfo, true) : null});
+    // ○倍の画像（jpg/tif）は白背景の情報欄に黒いバーが、_SEM画像（bmp）は暗い背景に白い
+    // バーが焼き込まれている。列の種類だけで決め打ちすると、その条件だけ○倍画像が無くて
+    // _SEM.bmpにフォールバックした場合に間違った色を探してしまうため、実際に使われた
+    // ファイルの拡張子で判定する。
+    const preferDark = !!(set.SEM && /\.(jpe?g|tiff?)$/i.test(set.SEM.name));
+    semByKey.set(key, {img, scale: img ? calibrateScaleBar(img, pixelInfo, preferDark) : null});
   }));
 
   const [elemAu, elemK, elemCl] = await Promise.all([
